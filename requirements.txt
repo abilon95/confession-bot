@@ -1,2 +1,5 @@
-pyTelegramBotAPI
-Flask
+fastapi
+uvicorn
+gunicorn
+pytelegrambotapi
+supabase
