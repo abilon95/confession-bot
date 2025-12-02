@@ -68,3 +68,8 @@ async def process_update(req: Request):
 @app.get("/")
 def home():
     return {"status": "running"}
+    
+@app.get("/render/health")
+def health():
+    return {"status": "ok"}
+
