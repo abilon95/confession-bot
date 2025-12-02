@@ -1,5 +1,4 @@
 import os
-import asyncio
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from supabase import create_client, Client
@@ -11,36 +10,37 @@ ADMIN_GROUP_ID = int(os.environ.get("ADMIN_GROUP_ID", "0"))
 TARGET_CHANNEL_ID = int(os.environ.get("TARGET_CHANNEL_ID", "0"))
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-PORT = int(os.environ.get("PORT", "5000"))
+
+# === Telegram Bot (threaded=False needed for webhook mode) ===
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", threaded=False)
 
 # === Supabase Client ===
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# === Telegram Bot ===
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
 # === FastAPI App ===
 app = FastAPI()
 
 
-# Webhook model
-class UpdateModel(BaseModel):
-    update_id: int
-    message: dict | None = None
+@app.post("/")
+async def webhook(request: Request):
+    data = await request.json()
+    update = telebot.types.Update.de_json(data)
+    bot.process_new_updates([update])   # <-- Correct update processing
+    return {"ok": True}
 
 
-# === Bot Logic ===
+# === Bot Handlers ===
 @bot.message_handler(commands=["start"])
-def start_message(msg):
-    bot.reply_to(msg, "Send your confession anonymously. I'll forward it without showing your identity.")
+def start_handler(msg):
+    bot.reply_to(msg, "Send your confession anonymously.")
 
 
 @bot.message_handler(func=lambda m: True)
-def handle_message(msg):
+def handle_confession(msg):
     user_id = msg.from_user.id
     text = msg.text
 
-    # Save confession to Supabase
+    # Save to Supabase
     supabase.table("confessions").insert({
         "user_id": str(user_id),
         "message": text
@@ -55,21 +55,7 @@ def handle_message(msg):
     bot.reply_to(msg, "Your confession has been sent anonymously ✔️")
 
 
-# === Webhook Handler ===
-@app.post("/")
-async def process_update(req: Request):
-    data = await req.json()
-    update = UpdateModel(**data)
-    bot.process_new_updates([telebot.types.Update.de_json(data)])
-    return {"ok": True}
-
-
-# === Root Route ===
+# === Health check ===
 @app.get("/")
 def home():
     return {"status": "running"}
-    
-@app.get("/render/health")
-def health():
-    return {"status": "ok"}
-
