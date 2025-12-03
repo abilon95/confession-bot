@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
 Final Confession Bot — full system (Render + Supabase)
-- Webhook via FastAPI (deploy with gunicorn main:app --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT)
+- Webhook via FastAPI (deploy with: 
+  gunicorn main:app --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT)
 - Uses Aiogram 3.x (async) and supabase-py
-- Env vars (exact names you asked for):
+- Env vars (exact names):
     BOT_TOKEN
     ADMIN_GROUP_ID
     TARGET_CHANNEL_ID
@@ -52,17 +53,17 @@ def build_channel_markup(bot_username: str, conf_id: int, count: int) -> InlineK
 
 def hub_keyboard(conf_id: int, total_comments: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton("➕ Add Comment", callback_data=f"add_c_{conf_id}")],
-        [InlineKeyboardButton(f"📂 Browse Comments ({total_comments})", callback_data=f"browse_{conf_id}_1")]
+        [InlineKeyboardButton(text="➕ Add Comment", callback_data=f"add_c_{conf_id}")],
+        [InlineKeyboardButton(text=f"📂 Browse Comments ({total_comments})", callback_data=f"browse_{conf_id}_1")]
     ])
     return kb
 
 def comment_vote_kb(comment_id: int, likes: int, dislikes: int, conf_id: int, page: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(f"👍 {likes}", callback_data=f"vote_{comment_id}_up_{conf_id}_{page}"),
-            InlineKeyboardButton(f"👎 {dislikes}", callback_data=f"vote_{comment_id}_dw_{conf_id}_{page}"),
-            InlineKeyboardButton("🚩", callback_data=f"report_{comment_id}_{conf_id}")
+            InlineKeyboardButton(text=f"👍 {likes}", callback_data=f"vote_{comment_id}_up_{conf_id}_{page}"),
+            InlineKeyboardButton(text=f"👎 {dislikes}", callback_data=f"vote_{comment_id}_dw_{conf_id}_{page}"),
+            InlineKeyboardButton(text="🚩", callback_data=f"report_{comment_id}_{conf_id}")
         ]
     ])
     return kb
@@ -70,11 +71,11 @@ def comment_vote_kb(comment_id: int, likes: int, dislikes: int, conf_id: int, pa
 def pagination_kb(conf_id: int, page: int, total_pages: int) -> InlineKeyboardMarkup:
     row = []
     if page > 1:
-        row.append(InlineKeyboardButton("⬅ Prev", callback_data=f"browse_{conf_id}_{page-1}"))
-    row.append(InlineKeyboardButton(f"Page {page}/{total_pages}", callback_data="noop"))
+        row.append(InlineKeyboardButton(text="⬅ Prev", callback_data=f"browse_{conf_id}_{page-1}"))
+    row.append(InlineKeyboardButton(text=f"Page {page}/{total_pages}", callback_data="noop"))
     if page < total_pages:
-        row.append(InlineKeyboardButton("Next ➡", callback_data=f"browse_{conf_id}_{page+1}"))
-    kb = InlineKeyboardMarkup(inline_keyboard=[row, [InlineKeyboardButton("➕ Add Comment", callback_data=f"add_c_{conf_id}")]])
+        row.append(InlineKeyboardButton(text="Next ➡", callback_data=f"browse_{conf_id}_{page+1}"))
+    kb = InlineKeyboardMarkup(inline_keyboard=[row, [InlineKeyboardButton(text="➕ Add Comment", callback_data=f"add_c_{conf_id}")]])
     return kb
 
 # ------------------ Small in-memory user state (ephemeral) ------------------
@@ -187,8 +188,8 @@ async def cmd_start(message: types.Message):
     # Show Terms & Accept for first-time or just show options for returning
     if message.from_user.id not in user_state.get("accepted_terms", {}):
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton("✅ Accept Terms", callback_data="accept_terms")],
-            [InlineKeyboardButton("❌ Decline", callback_data="decline_terms")]
+            [InlineKeyboardButton(text="✅ Accept Terms", callback_data="accept_terms")],
+            [InlineKeyboardButton(text="❌ Decline", callback_data="decline_terms")]
         ])
         terms_text = (
             "📜 *Terms & Conditions*\n\n"
@@ -200,8 +201,8 @@ async def cmd_start(message: types.Message):
     else:
         # Returning user, present share options
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton("💬 Share Experience", callback_data="share_experience")],
-            [InlineKeyboardButton("💭 Share Thought", callback_data="share_thought")]
+            [InlineKeyboardButton(text="💬 Share Experience", callback_data="share_experience")],
+            [InlineKeyboardButton(text="💭 Share Thought", callback_data="share_thought")]
         ])
         await message.answer("What do you want to share?", reply_markup=kb)
 
@@ -218,8 +219,8 @@ async def accept_terms_cb(callback: types.CallbackQuery):
     accepted.add(callback.from_user.id)
     user_state["accepted_terms"] = accepted
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton("💬 Share Experience", callback_data="share_experience")],
-        [InlineKeyboardButton("💭 Share Thought", callback_data="share_thought")]
+        [InlineKeyboardButton(text="💬 Share Experience", callback_data="share_experience")],
+        [InlineKeyboardButton(text="💭 Share Thought", callback_data="share_thought")]
     ])
     await callback.message.edit_text("What are you sharing?", reply_markup=kb)
     await callback.answer()
@@ -272,8 +273,8 @@ async def handle_message(message: types.Message):
             "Admins: Edit this message to sanitize, then Approve."
         )
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton("✅ Approve", callback_data=f"admin_approve_{conf_id}"),
-             InlineKeyboardButton("❌ Reject", callback_data=f"admin_reject_{conf_id}")]
+            [InlineKeyboardButton(text="✅ Approve", callback_data=f"admin_approve_{conf_id}"),
+             InlineKeyboardButton(text="❌ Reject", callback_data=f"admin_reject_{conf_id}")]
         ])
         await bot.send_message(ADMIN_GROUP_ID, review_text, parse_mode="Markdown", reply_markup=kb)
         # persist admin metadata in DB if you want; for now DB contains confession and Admin sees ID
@@ -283,8 +284,8 @@ async def handle_message(message: types.Message):
 
     # If message arrives without mode/state, show the quick menu
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton("💬 Share Experience", callback_data="share_experience")],
-        [InlineKeyboardButton("💭 Share Thought", callback_data="share_thought")]
+        [InlineKeyboardButton(text="💬 Share Experience", callback_data="share_experience")],
+        [InlineKeyboardButton(text="💭 Share Thought", callback_data="share_thought")]
     ])
     await message.reply("What would you like to do?", reply_markup=kb)
 
@@ -398,11 +399,11 @@ async def general_callback(call: types.CallbackQuery):
         rows = []
         for i in range(0, len(reasons), 2):
             row = []
-            row.append(InlineKeyboardButton(reasons[i], callback_data=f"reason_{reasons[i].replace(' ','_')}"))
+            row.append(InlineKeyboardButton(text=reasons[i], callback_data=f"reason_{reasons[i].replace(' ','_')}"))
             if i+1 < len(reasons):
-                row.append(InlineKeyboardButton(reasons[i+1], callback_data=f"reason_{reasons[i+1].replace(' ','_')}"))
+                row.append(InlineKeyboardButton(text=reasons[i+1], callback_data=f"reason_{reasons[i+1].replace(' ','_')}"))
             rows.append(row)
-        rows.append([InlineKeyboardButton("❌ Cancel", callback_data="noop")])
+        rows.append([InlineKeyboardButton(text="❌ Cancel", callback_data="noop")])
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
         await bot.send_message(call.from_user.id, "🚨 *What is wrong with this comment?* (Your report is anonymous)", parse_mode="Markdown", reply_markup=kb)
         await call.answer()
@@ -427,8 +428,8 @@ async def general_callback(call: types.CallbackQuery):
         comment = db_get_comment(c_id)
         conf = db_get_confession(conf_id)
         admin_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton("🗑️ Delete Comment", callback_data=f"admin_del_c_{c_id}_{conf_id}"),
-             InlineKeyboardButton("✅ Dismiss Report", callback_data=f"admin_dis_r_{c_id}")]
+            [InlineKeyboardButton(text="🗑️ Delete Comment", callback_data=f"admin_del_c_{c_id}_{conf_id}"),
+             InlineKeyboardButton(text="✅ Dismiss Report", callback_data=f"admin_dis_r_{c_id}")]
         ])
         report_msg = (
             f"🚨 *NEW REPORT* on Comment ID *#{c_id}* (Confession #{conf_id}).\n\n"
