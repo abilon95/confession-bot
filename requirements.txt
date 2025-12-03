@@ -1,7 +1,6 @@
 fastapi
 uvicorn
-python-multipart
+gunicorn
 aiogram==3.4.1
 supabase
 pydantic
-gunicorn
