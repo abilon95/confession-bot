@@ -276,8 +276,12 @@ async def handle_message(message: types.Message):
             [InlineKeyboardButton(text="✅ Approve", callback_data=f"admin_approve_{conf_id}"),
              InlineKeyboardButton(text="❌ Reject", callback_data=f"admin_reject_{conf_id}")]
         ])
-        await bot.send_message(ADMIN_GROUP_ID, review_text, parse_mode="Markdown", reply_markup=kb)
-        # persist admin metadata in DB if you want; for now DB contains confession and Admin sees ID
+        try:
+    await bot.send_message(ADMIN_GROUP_ID, review_text, parse_mode="Markdown", reply_markup=kb)
+except Exception as e:
+    print("FAILED TO SEND REVIEW MESSAGE:", e)
+    await message.reply(f"⚠ Failed to send confession to admin group.\nError: `{e}`")
+# persist admin metadata in DB if you want; for now DB contains confession and Admin sees ID
         await message.reply("✅ Confession sent for review!")
         user_state.pop(uid, None)
         return
@@ -539,3 +543,4 @@ def health():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
