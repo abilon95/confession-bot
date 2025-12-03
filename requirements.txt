@@ -1,6 +1,11 @@
-fastapi
-uvicorn
-gunicorn
+fastapi==0.110.0
+uvicorn==0.29.0
+gunicorn==23.0.0
+
 aiogram==3.4.1
-supabase
-pydantic
+supabase==2.4.6
+
+pydantic==2.7.4
+pydantic-core==2.18.0
+
+aiofiles~=23.2.1
