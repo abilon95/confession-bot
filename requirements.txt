@@ -5,7 +5,5 @@ gunicorn==23.0.0
 aiogram==3.4.1
 supabase==2.4.6
 
-pydantic==2.7.4
-pydantic-core==2.18.0
-
-aiofiles~=23.2.1
+# Let pip auto-resolve pydantic
+aiofiles==23.2.1
