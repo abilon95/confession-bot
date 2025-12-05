@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Final Confession Bot — full system (Render + Supabase)
-- Webhook via FastAPI (deploy with: 
-  gunicorn main:app --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT)
-- Uses Aiogram 3.x (async) and supabase-py
-- Env vars (exact names):
+Final Confession Bot — Render + Supabase (webhook)
+- FastAPI webhook intended for: gunicorn main:app --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT
+- Aiogram 3.x dispatcher (using dp.feed_update in webhook)
+- Supabase via supabase-py
+- Environment vars (exact names expected):
     BOT_TOKEN
     ADMIN_GROUP_ID
     TARGET_CHANNEL_ID
@@ -15,6 +15,7 @@ Final Confession Bot — full system (Render + Supabase)
 
 import os
 import math
+import traceback
 from typing import List, Optional
 
 from fastapi import FastAPI, Request
@@ -22,6 +23,7 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.filters import Command
 from supabase import create_client
+from postgrest.exceptions import APIError
 
 # ------------------ Environment (exact names) ------------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -83,32 +85,77 @@ def pagination_kb(conf_id: int, page: int, total_pages: int) -> InlineKeyboardMa
 user_state: dict = {}  # {user_id: {...}}
 
 # ------------------ DB helper functions ------------------
+def _safe_insert(table: str, payload: dict):
+    """
+    Insert with fallback: some Supabase projects may not have the same schema.
+    If insertion fails due to missing column in schema cache (PGRST204), try a reduced payload.
+    Returns the response object (res.data etc) or raises.
+    """
+    try:
+        return supabase.table(table).insert(payload).execute()
+    except APIError as e:
+        # Try to detect missing column error and retry with minimal payload
+        msg = getattr(e, "args", [None])[0]
+        if isinstance(msg, dict) and "message" in msg and "Could not find the" in msg["message"]:
+            # filter payload to only primitive text fields (best-effort)
+            reduced = {k: v for k, v in payload.items() if isinstance(v, (str, int, float, bool, type(None)))}
+            try:
+                return supabase.table(table).insert(reduced).execute()
+            except Exception:
+                raise
+        raise
+
 def db_add_confession(user_id: str, text: str) -> int:
-    res = supabase.table("confessions").insert({
-        "user_id": user_id,
-        "text": text,
-        "is_approved": False
-    }).execute()
-    return int(res.data[0]["id"])
+    # Try with recommended fields - fallback handled in _safe_insert
+    payload = {"user_id": user_id, "text": text, "is_approved": False}
+    res = _safe_insert("confessions", payload)
+    # server may return created row in res.data
+    try:
+        return int(res.data[0]["id"])
+    except Exception:
+        # if no row data returned, attempt to fetch last inserted by text+user (best-effort)
+        r = supabase.table("confessions").select("*").eq("user_id", user_id).eq("text", text).order("id", {"ascending": False}).limit(1).execute()
+        if r.data:
+            return int(r.data[0]["id"])
+        # as last resort raise
+        raise RuntimeError("Could not determine confession id after insert")
 
 def db_get_confession(conf_id: int) -> Optional[dict]:
     r = supabase.table("confessions").select("*").eq("id", conf_id).execute()
     return r.data[0] if r.data else None
 
 def db_set_confession_published(conf_id: int, channel_msg_id: int):
-    supabase.table("confessions").update({"is_approved": True, "channel_msg_id": channel_msg_id}).eq("id", conf_id).execute()
+    # update; if column doesn't exist will be ignored by Supabase - but we try
+    try:
+        supabase.table("confessions").update({"is_approved": True, "channel_msg_id": channel_msg_id}).eq("id", conf_id).execute()
+    except Exception:
+        # fallback: try to update only channel_msg_id
+        try:
+            supabase.table("confessions").update({"channel_msg_id": channel_msg_id}).eq("id", conf_id).execute()
+        except Exception:
+            pass
 
 def db_set_confession_rejected(conf_id: int):
-    supabase.table("confessions").update({"is_approved": False}).eq("id", conf_id).execute()
+    try:
+        supabase.table("confessions").update({"is_approved": False}).eq("id", conf_id).execute()
+    except Exception:
+        pass
 
 def db_add_comment(confession_id: int, user_id: str, username: str, text: str) -> int:
-    res = supabase.table("comments").insert({
+    payload = {
         "confession_id": confession_id,
         "user_id": user_id,
         "username": username,
         "text": text
-    }).execute()
-    return int(res.data[0]["id"])
+    }
+    res = _safe_insert("comments", payload)
+    try:
+        return int(res.data[0]["id"])
+    except Exception:
+        r = supabase.table("comments").select("*").eq("confession_id", confession_id).eq("user_id", user_id).eq("text", text).order("id", {"ascending": False}).limit(1).execute()
+        if r.data:
+            return int(r.data[0]["id"])
+        raise RuntimeError("Could not determine comment id after insert")
 
 def db_get_comments(confession_id: int) -> List[dict]:
     r = supabase.table("comments").select("*").eq("confession_id", confession_id).order("id", {"ascending": True}).execute()
@@ -119,74 +166,109 @@ def db_get_comment(comment_id: int) -> Optional[dict]:
     return r.data[0] if r.data else None
 
 def db_count_comments(confession_id: int) -> int:
+    # Use exact count if supported
     r = supabase.table("comments").select("id", count="exact").eq("confession_id", confession_id).execute()
     return int(r.count or 0)
 
 def db_delete_comment(comment_id: int):
-    supabase.table("comments").delete().eq("id", comment_id).execute()
+    try:
+        supabase.table("comments").delete().eq("id", comment_id).execute()
+    except Exception:
+        pass
     # remove votes cascade via DB FK if configured; otherwise delete votes explicitly
-    supabase.table("votes").delete().eq("comment_id", comment_id).execute()
-    supabase.table("reports").update({"reason": "resolved"}).eq("comment_id", comment_id).execute()
+    try:
+        supabase.table("votes").delete().eq("comment_id", comment_id).execute()
+    except Exception:
+        pass
+    try:
+        supabase.table("reports").update({"reason": "resolved"}).eq("comment_id", comment_id).execute()
+    except Exception:
+        pass
 
 def db_upsert_vote(user_id: str, comment_id: int, vote_value: int):
-    # upsert into votes (primary key user_id+comment_id)
-    supabase.table("votes").upsert({
-        "user_id": user_id,
-        "comment_id": comment_id,
-        "vote": vote_value
-    }).execute()
+    try:
+        supabase.table("votes").upsert({
+            "user_id": user_id,
+            "comment_id": comment_id,
+            "vote": vote_value
+        }).execute()
+    except Exception:
+        pass
 
 def db_delete_vote(user_id: str, comment_id: int):
-    supabase.table("votes").delete().eq("user_id", user_id).eq("comment_id", comment_id).execute()
+    try:
+        supabase.table("votes").delete().eq("user_id", user_id).eq("comment_id", comment_id).execute()
+    except Exception:
+        pass
 
 def db_get_vote_counts(comment_id: int) -> (int, int):
-    l = supabase.table("votes").select("*", count="exact").eq("comment_id", comment_id).eq("vote", 1).execute().count or 0
-    d = supabase.table("votes").select("*", count="exact").eq("comment_id", comment_id).eq("vote", -1).execute().count or 0
-    return int(l), int(d)
+    try:
+        l = supabase.table("votes").select("*", count="exact").eq("comment_id", comment_id).eq("vote", 1).execute().count or 0
+        d = supabase.table("votes").select("*", count="exact").eq("comment_id", comment_id).eq("vote", -1).execute().count or 0
+        return int(l), int(d)
+    except Exception:
+        return 0, 0
 
 def db_add_report(comment_id: int, reporting_user_id: str, reason: str) -> bool:
-    # prevent duplicate by same user
-    existing = supabase.table("reports").select("*").eq("comment_id", comment_id).eq("user_id", reporting_user_id).execute()
-    if existing.data:
+    try:
+        existing = supabase.table("reports").select("*").eq("comment_id", comment_id).eq("user_id", reporting_user_id).execute()
+        if existing.data:
+            return False
+        supabase.table("reports").insert({
+            "comment_id": comment_id,
+            "user_id": reporting_user_id,
+            "reason": reason
+        }).execute()
+        return True
+    except Exception:
         return False
-    supabase.table("reports").insert({
-        "comment_id": comment_id,
-        "user_id": reporting_user_id,
-        "reason": reason
-    }).execute()
-    return True
 
 # ------------------ Bot handlers ------------------
+# Note: aiogram handlers are registered through decorators; dp.feed_update used in webhook.
+
+def _safe_reply_or_send(target_chat_id: int, reply_to_message_id: Optional[int], text: str, **kwargs):
+    """
+    Coroutine wrapper helper that tries to reply; if reply fails (message missing) send directly.
+    Returns coroutine (await it).
+    """
+    async def _inner():
+        try:
+            if reply_to_message_id:
+                return await bot.send_message(target_chat_id, text, reply_to_message_id=reply_to_message_id, **kwargs)
+            else:
+                return await bot.send_message(target_chat_id, text, **kwargs)
+        except Exception:
+            # fallback to send_message without reply
+            return await bot.send_message(target_chat_id, text, **kwargs)
+    return _inner()
 
 # /start handler supports deep link payloads like /start conf_123
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    # If payload deep-link present (aiogram attaches payload differently), handle simple flow by showing Terms or hub
     text = message.text or ""
     payload = None
     parts = text.split(maxsplit=1)
     if len(parts) > 1:
         payload = parts[1]
-    # If deep link like t.me/YourBot?start=conf_123 Telegram may send the payload in message.text after /start
     if payload and payload.startswith("conf_"):
         try:
             conf_id = int(payload.split("_", 1)[1])
         except Exception:
-            await message.answer("Invalid confession link.")
+            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "Invalid confession link.")
             return
         conf = db_get_confession(conf_id)
         if not conf or not conf.get("is_approved"):
-            await message.answer("Confession not found or not published.")
+            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "Confession not found or not published.")
             return
         total = db_count_comments(conf_id)
         hub_text = f"*Confession #{conf_id}*\n\n_{conf.get('text')}_\n\nYou can always 🚩 report inappropriate comments.\n\nSelect an option below:"
         kb = hub_keyboard(conf_id, total)
-        await message.answer(hub_text, reply_markup=kb, parse_mode="Markdown")
+        await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), hub_text, reply_markup=kb, parse_mode="Markdown")
         return
 
     # Normal /start -> Terms or menu depending on user state
-    # Show Terms & Accept for first-time or just show options for returning
-    if message.from_user.id not in user_state.get("accepted_terms", {}):
+    accepted_set = user_state.get("accepted_terms", set())
+    if message.from_user.id not in accepted_set:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Accept Terms", callback_data="accept_terms")],
             [InlineKeyboardButton(text="❌ Decline", callback_data="decline_terms")]
@@ -197,14 +279,13 @@ async def cmd_start(message: types.Message):
             "2. Admins see your identity during review.\n"
             "3. Approved messages are posted anonymously.\n\nClick *Accept* to continue."
         )
-        await message.answer(terms_text, reply_markup=kb, parse_mode="Markdown")
+        await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), terms_text, reply_markup=kb, parse_mode="Markdown")
     else:
-        # Returning user, present share options
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="💬 Share Experience", callback_data="share_experience")],
             [InlineKeyboardButton(text="💭 Share Thought", callback_data="share_thought")]
         ])
-        await message.answer("What do you want to share?", reply_markup=kb)
+        await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "What do you want to share?", reply_markup=kb)
 
 # Accept / decline Terms callbacks
 @dp.callback_query(lambda c: c.data == "accept_terms" or c.data == "decline_terms")
@@ -213,8 +294,6 @@ async def accept_terms_cb(callback: types.CallbackQuery):
         await callback.message.edit_text("❌ You declined.")
         await callback.answer()
         return
-    # mark user accepted (ephemeral)
-    # We'll keep a simple in-memory set of accepted users so returning users skip terms
     accepted = user_state.get("accepted_terms", set())
     accepted.add(callback.from_user.id)
     user_state["accepted_terms"] = accepted
@@ -228,9 +307,13 @@ async def accept_terms_cb(callback: types.CallbackQuery):
 # choose type -> prompt to send text
 @dp.callback_query(lambda c: c.data in ("share_experience", "share_thought"))
 async def choose_type_cb(callback: types.CallbackQuery):
-    # save in user_state
     user_state[callback.from_user.id] = {"mode": callback.data, "active_conf_id": None}
-    await bot.send_message(callback.from_user.id, "✔ Okay — send your text now.")
+    # send a private message asking for the text
+    try:
+        await bot.send_message(callback.from_user.id, "✔ Okay — send your text now.")
+    except Exception:
+        # user may not have started direct chat; reply in current chat as fallback
+        await _safe_reply_or_send(callback.message.chat.id, callback.message.message_id, "✔ Okay — send your text now.")
     await callback.answer()
 
 # handle incoming messages: either confession text or comment text depending on user_state
@@ -243,7 +326,14 @@ async def handle_message(message: types.Message):
     # If user is currently writing a comment (active_conf_id present)
     if state.get("active_conf_id"):
         conf_id = state["active_conf_id"]
-        c_id = db_add_comment(conf_id, str(uid), message.from_user.username or message.from_user.full_name, text)
+        try:
+            c_id = db_add_comment(conf_id, str(uid), message.from_user.username or message.from_user.full_name, text)
+        except Exception as e:
+            print("Failed adding comment:", e, traceback.format_exc())
+            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "❌ Failed to post comment. Try again later.")
+            user_state.pop(uid, None)
+            return
+
         # Update channel button count
         new_count = db_count_comments(conf_id)
         conf = db_get_confession(conf_id)
@@ -253,17 +343,22 @@ async def handle_message(message: types.Message):
                 new_kb = build_channel_markup(bot_username, conf_id, new_count)
                 await bot.edit_message_reply_markup(TARGET_CHANNEL_ID, conf.get("channel_msg_id"), reply_markup=new_kb)
             except Exception as e:
-                # log silently
                 print("Failed to update channel markup:", e)
-        await message.reply(f"✅ Your comment on Confession #{conf_id} is live!")
-        # clear active_conf_id
+        # respond to user (robust)
+        await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), f"✅ Your comment on Confession #{conf_id} is live!")
         user_state.pop(uid, None)
         return
 
     # Otherwise, assume it's a confession (user clicked share_experience/share_thought previously)
     if state.get("mode") in ("share_experience", "share_thought"):
-        # save confession and forward to admin group (admins see who sent it)
-        conf_id = db_add_confession(str(uid), text)
+        try:
+            conf_id = db_add_confession(str(uid), text)
+        except Exception as e:
+            print("Failed adding confession:", e, traceback.format_exc())
+            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "❌ Failed to submit confession. Try again later.")
+            user_state.pop(uid, None)
+            return
+
         # send to admin group for review (include author info)
         review_text = (
             f"🛂 *Review New Confession*\n"
@@ -276,22 +371,18 @@ async def handle_message(message: types.Message):
             [InlineKeyboardButton(text="✅ Approve", callback_data=f"admin_approve_{conf_id}"),
              InlineKeyboardButton(text="❌ Reject", callback_data=f"admin_reject_{conf_id}")]
         ])
+        # send review to admin group - robust send
         try:
-          await bot.send_message(
-            ADMIN_GROUP_ID, 
-            review_text, 
-            parse_mode="Markdown", 
-            reply_markup=kb
-          )
-        except Exception as e:
-          print("FAILED TO SEND REVIEW MESSAGE:", e)
-          await message.reply(
-            f"⚠ Failed to send confession to admin group.\nError: `{e}`",
-            parse_mode="Markdown"
-          )
+            await bot.send_message(ADMIN_GROUP_ID, review_text, parse_mode="Markdown", reply_markup=kb)
+        except Exception:
+            # sometimes admins group may block bot or group id wrong
+            print("Failed to forward confession to admin group. Check ADMIN_GROUP_ID and bot permissions.")
+            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "❌ Could not forward confession to admin group. Contact admin.")
+            user_state.pop(uid, None)
+            return
 
-# persist admin metadata in DB if you want; for now DB contains confession and Admin sees ID
-        await message.reply("✅ Confession sent for review!")
+        # confirm to user
+        await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "✅ Confession sent for review!")
         user_state.pop(uid, None)
         return
 
@@ -300,7 +391,7 @@ async def handle_message(message: types.Message):
         [InlineKeyboardButton(text="💬 Share Experience", callback_data="share_experience")],
         [InlineKeyboardButton(text="💭 Share Thought", callback_data="share_thought")]
     ])
-    await message.reply("What would you like to do?", reply_markup=kb)
+    await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "What would you like to do?", reply_markup=kb)
 
 # ---------------- Callback handler for hub, browse, vote, report, admin ----------------
 @dp.callback_query()
@@ -314,20 +405,21 @@ async def general_callback(call: types.CallbackQuery):
 
     # Add Comment button (from channel deep link hub or inside bot)
     if data.startswith("add_c_"):
-        # format: add_c_{conf_id}
         try:
             conf_id = int(data.split("_")[2])
         except:
             await call.answer("Invalid data")
             return
         user_state[call.from_user.id] = {"active_conf_id": conf_id}
-        await bot.send_message(call.from_user.id, "📝 Please type your comment now:")
+        try:
+            await bot.send_message(call.from_user.id, "📝 Please type your comment now:")
+        except Exception:
+            await _safe_reply_or_send(call.message.chat.id, call.message.message_id, "📝 Please type your comment now:")
         await call.answer()
         return
 
     # Browse comments: browse_{conf_id}_{page}
     if data.startswith("browse_"):
-        # parse
         try:
             _, conf_id_s, page_s = data.split("_")
             conf_id = int(conf_id_s); page = int(page_s)
@@ -342,14 +434,17 @@ async def general_callback(call: types.CallbackQuery):
         start = (page-1)*per_page
         chunk = comments[start:start+per_page]
 
-        # delete the callback message to make space
+        # delete the callback message to reduce clutter (best-effort)
         try:
             await bot.delete_message(call.message.chat.id, call.message.message_id)
         except Exception:
             pass
 
         if not chunk:
-            await bot.send_message(call.from_user.id, "No comments yet.")
+            try:
+                await bot.send_message(call.from_user.id, "No comments yet.")
+            except Exception:
+                await _safe_reply_or_send(call.message.chat.id, None, "No comments yet.")
             await call.answer()
             return
 
@@ -361,11 +456,17 @@ async def general_callback(call: types.CallbackQuery):
             likes, dislikes = db_get_vote_counts(c_id)
             txt = f"💬 {c_text}\n👤 *{u_name}*"
             kb = comment_vote_kb(c_id, likes, dislikes, conf_id, page)
-            await bot.send_message(call.from_user.id, txt, parse_mode="Markdown", reply_markup=kb)
+            try:
+                await bot.send_message(call.from_user.id, txt, parse_mode="Markdown", reply_markup=kb)
+            except Exception:
+                await _safe_reply_or_send(call.message.chat.id, None, txt, parse_mode="Markdown", reply_markup=kb)
 
         # pagination controls (include add comment button)
         nav_kb = pagination_kb(conf_id, page, total_pages)
-        await bot.send_message(call.from_user.id, f"Displaying page {page}/{total_pages}. Total {total} Comments", reply_markup=nav_kb)
+        try:
+            await bot.send_message(call.from_user.id, f"Displaying page {page}/{total_pages}. Total {total} Comments", reply_markup=nav_kb)
+        except Exception:
+            await _safe_reply_or_send(call.message.chat.id, None, f"Displaying page {page}/{total_pages}. Total {total} Comments", reply_markup=nav_kb)
         await call.answer()
         return
 
@@ -377,22 +478,21 @@ async def general_callback(call: types.CallbackQuery):
         c_id = int(parts[1]); vtype = parts[2]; conf_id = int(parts[3]); page = int(parts[4])
         user_id = str(call.from_user.id)
 
-        # 1 vote per user per comment (1 or -1). Toggle logic:
-        # If same vote exists -> remove; if different -> upsert with new value
-        existing = supabase.table("votes").select("*").eq("comment_id", c_id).eq("user_id", user_id).execute()
-        want = 1 if vtype == "up" else -1
+        try:
+            existing = supabase.table("votes").select("*").eq("comment_id", c_id).eq("user_id", user_id).execute()
+            want = 1 if vtype == "up" else -1
 
-        if existing.data:
-            cur = existing.data[0]
-            if int(cur["vote"]) == want:
-                # remove vote
-                db_delete_vote(user_id, c_id)
+            if existing.data:
+                cur = existing.data[0]
+                if int(cur.get("vote", 0)) == want:
+                    db_delete_vote(user_id, c_id)
+                else:
+                    db_upsert_vote(user_id, c_id, want)
             else:
                 db_upsert_vote(user_id, c_id, want)
-        else:
-            db_upsert_vote(user_id, c_id, want)
+        except Exception:
+            pass
 
-        # fetch fresh counts and edit the keyboard on the message
         likes, dislikes = db_get_vote_counts(c_id)
         new_kb = comment_vote_kb(c_id, likes, dislikes, conf_id, page)
         try:
@@ -404,9 +504,11 @@ async def general_callback(call: types.CallbackQuery):
 
     # Reporting: report_{comment_id}_{conf_id}
     if data.startswith("report_"):
-        _, c_id_s, conf_id_s = data.split("_")
-        c_id = int(c_id_s); conf_id = int(conf_id_s)
-        # store in ephemeral user_state and ask reason
+        try:
+            _, c_id_s, conf_id_s = data.split("_")
+            c_id = int(c_id_s); conf_id = int(conf_id_s)
+        except:
+            await call.answer("Invalid report data"); return
         user_state[call.from_user.id] = {"report_c_id": c_id, "report_conf_id": conf_id}
         reasons = ["Violence", "Racism", "Sexual Harassment", "Hate Speech", "Spam/Scam", "Other"]
         rows = []
@@ -418,7 +520,10 @@ async def general_callback(call: types.CallbackQuery):
             rows.append(row)
         rows.append([InlineKeyboardButton(text="❌ Cancel", callback_data="noop")])
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
-        await bot.send_message(call.from_user.id, "🚨 *What is wrong with this comment?* (Your report is anonymous)", parse_mode="Markdown", reply_markup=kb)
+        try:
+            await bot.send_message(call.from_user.id, "🚨 *What is wrong with this comment?* (Your report is anonymous)", parse_mode="Markdown", reply_markup=kb)
+        except Exception:
+            await _safe_reply_or_send(call.message.chat.id, None, "🚨 *What is wrong with this comment?* (Your report is anonymous)", parse_mode="Markdown", reply_markup=kb)
         await call.answer()
         return
 
@@ -433,13 +538,15 @@ async def general_callback(call: types.CallbackQuery):
             await call.answer("Error: comment ID lost."); return
         ok = db_add_report(c_id, str(call.from_user.id), reason)
         if not ok:
-            await bot.send_message(call.from_user.id, "🚫 You already reported this comment.")
+            try:
+                await bot.send_message(call.from_user.id, "🚫 You already reported this comment.")
+            except Exception:
+                await _safe_reply_or_send(call.message.chat.id, None, "🚫 You already reported this comment.")
             await call.answer()
             return
 
-        # forward report to admin group with confession text and comment
-        comment = db_get_comment(c_id)
-        conf = db_get_confession(conf_id)
+        comment = db_get_comment(c_id) or {}
+        conf = db_get_confession(conf_id) or {}
         admin_kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🗑️ Delete Comment", callback_data=f"admin_del_c_{c_id}_{conf_id}"),
              InlineKeyboardButton(text="✅ Dismiss Report", callback_data=f"admin_dis_r_{c_id}")]
@@ -451,8 +558,12 @@ async def general_callback(call: types.CallbackQuery):
             f"*Author:* {comment.get('username')} (ID: {comment.get('user_id')})\n\n"
             f"*Reason:* {reason}"
         )
-        await bot.send_message(ADMIN_GROUP_ID, report_msg, parse_mode="Markdown", reply_markup=admin_kb)
-        await bot.send_message(call.from_user.id, f"✅ Report submitted successfully for reason: *{reason}*", parse_mode="Markdown")
+        try:
+            await bot.send_message(ADMIN_GROUP_ID, report_msg, parse_mode="Markdown", reply_markup=admin_kb)
+            await bot.send_message(call.from_user.id, f"✅ Report submitted successfully for reason: *{reason}*", parse_mode="Markdown")
+        except Exception:
+            print("Failed to send report to admins")
+            await _safe_reply_or_send(call.message.chat.id, None, "✅ Report submitted successfully for reason: *{reason}*", parse_mode="Markdown")
         user_state.pop(call.from_user.id, None)
         await call.answer()
         return
@@ -464,9 +575,7 @@ async def general_callback(call: types.CallbackQuery):
             c_id = int(parts[3]); conf_id = int(parts[4])
         except:
             await call.answer("Invalid data"); return
-        # delete comment
         db_delete_comment(c_id)
-        # update channel button count
         new_count = db_count_comments(conf_id)
         conf = db_get_confession(conf_id)
         chan_msg_id = conf.get("channel_msg_id") if conf else None
@@ -477,7 +586,10 @@ async def general_callback(call: types.CallbackQuery):
                 await bot.edit_message_reply_markup(TARGET_CHANNEL_ID, chan_msg_id, reply_markup=new_kb)
             except Exception as e:
                 print("Failed update channel markup after admin delete:", e)
-        await bot.edit_message_text(f"🗑️ Comment ID *#{c_id}* deleted. Channel count updated.", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+        try:
+            await bot.edit_message_text(f"🗑️ Comment ID *#{c_id}* deleted. Channel count updated.", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+        except Exception:
+            pass
         await call.answer()
         return
 
@@ -488,20 +600,24 @@ async def general_callback(call: types.CallbackQuery):
             c_id = int(parts[3])
         except:
             await call.answer("Invalid data"); return
-        # mark report resolved/dismissed
-        supabase.table("reports").update({"reason": "dismissed"}).eq("comment_id", c_id).execute()
-        await bot.edit_message_text(f"✅ Reports for Comment ID *#{c_id}* dismissed.", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+        try:
+            supabase.table("reports").update({"reason": "dismissed"}).eq("comment_id", c_id).execute()
+        except Exception:
+            pass
+        try:
+            await bot.edit_message_text(f"✅ Reports for Comment ID *#{c_id}* dismissed.", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+        except Exception:
+            pass
         await call.answer()
         return
 
     # Admin approve/reject from review message
     if data.startswith("admin_approve_") or data.startswith("admin_reject_"):
         parts = data.split("_")
+        # action expected like admin_approve_{id} => parts[1] == 'approve' parts[2] == id
         action = parts[1]
         conf_id = int(parts[2])
-        # get current message text (admins may have edited)
         current_text = call.message.text or ""
-        # try to extract content after "📝 Content:" if admin sanitized; fallback to DB
         if "📝 Content:" in current_text:
             try:
                 final_text = current_text.split("📝 Content:")[1].strip()
@@ -512,27 +628,50 @@ async def general_callback(call: types.CallbackQuery):
 
         if action == "reject":
             db_set_confession_rejected(conf_id)
-            await bot.edit_message_text(f"❌ Rejected.\n\nOriginal: {final_text}", call.message.chat.id, call.message.message_id)
+            try:
+                await bot.edit_message_text(f"❌ Rejected.\n\nOriginal: {final_text}", call.message.chat.id, call.message.message_id)
+            except Exception:
+                pass
             await call.answer()
             return
         else:
             # publish to channel (anonymous)
             post_text = f"*Confession #{conf_id}*\n\n{final_text}\n\n#Confession"
-            sent = await bot.send_message(TARGET_CHANNEL_ID, post_text, parse_mode="Markdown", reply_markup=build_channel_markup((await bot.get_me()).username, conf_id, 0))
-            db_set_confession_published(conf_id, sent.message_id)
-            await bot.edit_message_text(f"✅ Confession #{conf_id} Published.", call.message.chat.id, call.message.message_id)
+            try:
+                sent = await bot.send_message(TARGET_CHANNEL_ID, post_text, parse_mode="Markdown", reply_markup=build_channel_markup((await bot.get_me()).username, conf_id, 0))
+                # update db with channel message id (best-effort)
+                db_set_confession_published(conf_id, sent.message_id)
+                try:
+                    await bot.edit_message_text(f"✅ Confession #{conf_id} Published.", call.message.chat.id, call.message.message_id)
+                except Exception:
+                    pass
+            except Exception as e:
+                print("Failed to publish confession to channel:", e)
+                try:
+                    await bot.send_message(call.message.chat.id, f"❌ Failed to publish confession #{conf_id}.")
+                except Exception:
+                    pass
             await call.answer()
             return
 
-    # fallback
     await call.answer()
 
 # ------------------ Webhook route (FastAPI) ------------------
 @app.post("/")
 async def webhook(request: Request):
     data = await request.json()
-    update = types.Update(**data)
-    await dp.feed_update(bot, update)
+    try:
+        update = types.Update(**data)
+    except Exception:
+        # invalid update
+        return {"ok": False, "error": "invalid update"}
+    try:
+        await dp.feed_update(bot, update)
+    except Exception as e:
+        # Log - do not let exceptions kill the server
+        print("Error while feeding update:", e, traceback.format_exc())
+        # swallow errors and return ok so Telegram doesn't keep retrying too fast
+        return {"ok": False, "error": "handler error"}
     return {"ok": True}
 
 # Health endpoints
@@ -548,9 +687,6 @@ def health():
 # This file is intended to be run by Gunicorn on Render:
 # gunicorn main:app --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT
 
-# Local debug (optional)
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
-
-
