@@ -39,7 +39,7 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     raise RuntimeError("SUPABASE_URL and SUPABASE_KEY are required")
 
 # ------------------ Clients ------------------
-bot = Bot(BOT_TOKEN, parse_mode="Markdown")
+bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -263,7 +263,7 @@ async def cmd_start(message: types.Message):
         total = db_count_comments(conf_id)
         hub_text = f"*Confession #{conf_id}*\n\n_{conf.get('text')}_\n\nYou can always 🚩 report inappropriate comments.\n\nSelect an option below:"
         kb = hub_keyboard(conf_id, total)
-        await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), hub_text, reply_markup=kb, parse_mode="Markdown")
+        await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), hub_text, reply_markup=kb)
         return
 
     # Normal /start -> Terms or menu depending on user state
@@ -279,7 +279,7 @@ async def cmd_start(message: types.Message):
             "2. Admins see your identity during review.\n"
             "3. Approved messages are posted anonymously.\n\nClick *Accept* to continue."
         )
-        await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), terms_text, reply_markup=kb, parse_mode="Markdown")
+        await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), terms_text, reply_markup=kb)
     else:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="💬 Share Experience", callback_data="share_experience")],
@@ -373,7 +373,7 @@ async def handle_message(message: types.Message):
         ])
         # send review to admin group - robust send
         try:
-            await bot.send_message(ADMIN_GROUP_ID, review_text, parse_mode="Markdown", reply_markup=kb)
+            await bot.send_message(ADMIN_GROUP_ID, review_text, reply_markup=kb)
         except Exception:
             # sometimes admins group may block bot or group id wrong
             print("Failed to forward confession to admin group. Check ADMIN_GROUP_ID and bot permissions.")
@@ -457,9 +457,9 @@ async def general_callback(call: types.CallbackQuery):
             txt = f"💬 {c_text}\n👤 *{u_name}*"
             kb = comment_vote_kb(c_id, likes, dislikes, conf_id, page)
             try:
-                await bot.send_message(call.from_user.id, txt, parse_mode="Markdown", reply_markup=kb)
+                await bot.send_message(call.from_user.id, txt, reply_markup=kb)
             except Exception:
-                await _safe_reply_or_send(call.message.chat.id, None, txt, parse_mode="Markdown", reply_markup=kb)
+                await _safe_reply_or_send(call.message.chat.id, None, txt, reply_markup=kb)
 
         # pagination controls (include add comment button)
         nav_kb = pagination_kb(conf_id, page, total_pages)
@@ -521,9 +521,9 @@ async def general_callback(call: types.CallbackQuery):
         rows.append([InlineKeyboardButton(text="❌ Cancel", callback_data="noop")])
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
         try:
-            await bot.send_message(call.from_user.id, "🚨 *What is wrong with this comment?* (Your report is anonymous)", parse_mode="Markdown", reply_markup=kb)
+            await bot.send_message(call.from_user.id, "🚨 *What is wrong with this comment?* (Your report is anonymous)", reply_markup=kb)
         except Exception:
-            await _safe_reply_or_send(call.message.chat.id, None, "🚨 *What is wrong with this comment?* (Your report is anonymous)", parse_mode="Markdown", reply_markup=kb)
+            await _safe_reply_or_send(call.message.chat.id, None, "🚨 *What is wrong with this comment?* (Your report is anonymous)", reply_markup=kb)
         await call.answer()
         return
 
@@ -559,11 +559,11 @@ async def general_callback(call: types.CallbackQuery):
             f"*Reason:* {reason}"
         )
         try:
-            await bot.send_message(ADMIN_GROUP_ID, report_msg, parse_mode="Markdown", reply_markup=admin_kb)
-            await bot.send_message(call.from_user.id, f"✅ Report submitted successfully for reason: *{reason}*", parse_mode="Markdown")
+            await bot.send_message(ADMIN_GROUP_ID, report_msg, reply_markup=admin_kb)
+            await bot.send_message(call.from_user.id, f"✅ Report submitted successfully for reason: *{reason}*")
         except Exception:
             print("Failed to send report to admins")
-            await _safe_reply_or_send(call.message.chat.id, None, "✅ Report submitted successfully for reason: *{reason}*", parse_mode="Markdown")
+            await _safe_reply_or_send(call.message.chat.id, None, "✅ Report submitted successfully for reason: *{reason}*")
         user_state.pop(call.from_user.id, None)
         await call.answer()
         return
@@ -587,7 +587,7 @@ async def general_callback(call: types.CallbackQuery):
             except Exception as e:
                 print("Failed update channel markup after admin delete:", e)
         try:
-            await bot.edit_message_text(f"🗑️ Comment ID *#{c_id}* deleted. Channel count updated.", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+            await bot.edit_message_text(f"🗑️ Comment ID *#{c_id}* deleted. Channel count updated.", call.message.chat.id, call.message.message_id)
         except Exception:
             pass
         await call.answer()
@@ -605,7 +605,7 @@ async def general_callback(call: types.CallbackQuery):
         except Exception:
             pass
         try:
-            await bot.edit_message_text(f"✅ Reports for Comment ID *#{c_id}* dismissed.", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+            await bot.edit_message_text(f"✅ Reports for Comment ID *#{c_id}* dismissed.", call.message.chat.id, call.message.message_id)
         except Exception:
             pass
         await call.answer()
@@ -638,7 +638,7 @@ async def general_callback(call: types.CallbackQuery):
             # publish to channel (anonymous)
             post_text = f"*Confession #{conf_id}*\n\n{final_text}\n\n#Confession"
             try:
-                sent = await bot.send_message(TARGET_CHANNEL_ID, post_text, parse_mode="Markdown", reply_markup=build_channel_markup((await bot.get_me()).username, conf_id, 0))
+                sent = await bot.send_message(TARGET_CHANNEL_ID, post_text, reply_markup=build_channel_markup((await bot.get_me()).username, conf_id, 0))
                 # update db with channel message id (best-effort)
                 db_set_confession_published(conf_id, sent.message_id)
                 try:
@@ -690,3 +690,4 @@ def health():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
