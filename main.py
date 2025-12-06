@@ -158,7 +158,13 @@ def db_add_comment(confession_id: int, user_id: str, username: str, text: str) -
         raise RuntimeError("Could not determine comment id after insert")
 
 def db_get_comments(confession_id: int) -> List[dict]:
-    r = supabase.table("comments").select("*").eq("confession_id", confession_id).order("id", {"ascending": True}).execute()
+    r = (
+        supabase.table("comments")
+        .select("*")
+        .eq("confession_id", confession_id)
+        .order("id", desc=False)   # ascending order
+        .execute()
+    )
     return r.data or []
 
 def db_get_comment(comment_id: int) -> Optional[dict]:
@@ -276,8 +282,8 @@ async def cmd_start(message: types.Message):
         terms_text = (
             "📜 *Terms & Conditions*\n\n"
             "1. Admins will review your message.\n"
-            "2. Admins see your identity during review.\n"
-            "3. Approved messages are posted anonymously.\n\nClick *Accept* to continue."
+            "2. Approved messages are posted anonymously.\n"
+            "3. Any Comments containing inappropriate content will be removed.\n\nClick *Accept* to continue."
         )
         await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), terms_text, reply_markup=kb)
     else:
@@ -365,7 +371,6 @@ async def handle_message(message: types.Message):
             f"👤 Author: {message.from_user.full_name} (ID: {uid})\n"
             f"Confession ID: {conf_id}\n\n"
             f"📝 Content:\n{text}\n\n"
-            "Admins: Edit this message to sanitize, then Approve."
         )
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Approve", callback_data=f"admin_approve_{conf_id}"),
@@ -690,4 +695,5 @@ def health():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
 
