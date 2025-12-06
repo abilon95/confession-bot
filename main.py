@@ -439,12 +439,6 @@ async def general_callback(call: types.CallbackQuery):
         start = (page-1)*per_page
         chunk = comments[start:start+per_page]
 
-        # delete the callback message to reduce clutter (best-effort)
-        try:
-            await bot.delete_message(call.message.chat.id, call.message.message_id)
-        except Exception:
-            pass
-
         if not chunk:
             try:
                 await bot.send_message(call.from_user.id, "No comments yet.")
@@ -695,5 +689,6 @@ def health():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
 
 
