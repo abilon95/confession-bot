@@ -453,7 +453,7 @@ async def general_callback(call: types.CallbackQuery):
             u_name = c.get("username") or "Anon"
             c_text = c.get("text", "")
             likes, dislikes = db_get_vote_counts(c_id)
-            txt = f"💬 {c_text}\n👤 *{u_name}*"
+            txt = f"💬 {c_text}\n👤 *Anonymous*"
             kb = comment_vote_kb(c_id, likes, dislikes, conf_id, page)
             try:
                 await bot.send_message(call.from_user.id, txt, reply_markup=kb)
@@ -689,6 +689,7 @@ def health():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
 
 
 
