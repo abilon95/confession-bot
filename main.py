@@ -23,7 +23,18 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import Command
 from supabase import create_client
-from postgrest.exceptions import APIError
+from postgrest.exceptions import APIError 
+from aiogram.types import BotCommand
+
+async def set_bot_commands(bot: Bot):
+    commands = [
+        BotCommand(command="profile", description="View your profile and history"),
+        BotCommand(command="help", description="Show help and commands"),
+        BotCommand(command="rules", description="View the bot's rules"),
+        BotCommand(command="cancel", description="Cancel current action")
+    ]
+    await bot.set_my_commands(commands)
+
 
 # ------------------ Environment (exact names) ------------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -44,6 +55,10 @@ dp = Dispatcher()
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 app = FastAPI()
+
+@app.on_event("startup")
+async def on_startup():
+    await set_bot_commands(bot)
 
 # ------------------ Helpers / UI Builders ------------------
 def build_channel_markup(bot_username: str, conf_id: int, count: int) -> InlineKeyboardMarkup:
@@ -1077,3 +1092,4 @@ def health():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
