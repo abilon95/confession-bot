@@ -20,7 +20,7 @@ from typing import List, Optional
 
 from fastapi import FastAPI, Request
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import Command
 from supabase import create_client
 from postgrest.exceptions import APIError
@@ -61,7 +61,7 @@ def hub_keyboard(conf_id: int, total_comments: int) -> InlineKeyboardMarkup:
     return kb
 
 def comment_vote_kb(comment_id: int, likes: int, dislikes: int, conf_id: int, page: int) -> InlineKeyboardMarkup:
-    # Updated: Reply button on its own row below the three buttons
+    # Reply button on its own row below the three buttons
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text=f"👍 {likes}", callback_data=f"vote_{comment_id}_up_{conf_id}_{page}"),
@@ -82,11 +82,37 @@ def pagination_kb(conf_id: int, page: int, total_pages: int) -> InlineKeyboardMa
     kb = InlineKeyboardMarkup(inline_keyboard=[row, [InlineKeyboardButton(text="➕ Add Comment", callback_data=f"add_c_{conf_id}")]])
     return kb
 
+# Persistent reply keyboard with a Menu button
+def menu_reply_keyboard() -> ReplyKeyboardMarkup:
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Menu")]
+        ],
+        resize_keyboard=True
+    )
+    return kb
+
+# Inline menu showing the main commands
+def menu_commands_inline() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="/profile", callback_data="cmd_profile"),
+            InlineKeyboardButton(text="/help", callback_data="cmd_help")
+        ],
+        [
+            InlineKeyboardButton(text="/rules", callback_data="cmd_rules"),
+            InlineKeyboardButton(text="/cancel", callback_data="cmd_cancel")
+        ]
+    ])
+    return kb
+
 # ------------------ Small in-memory user state (ephemeral) ------------------
 # For flows: accept terms -> choose type -> send confession / add comment / report reason
 user_state: dict = {}  # {user_id: {...}}
-# NEW: For reply flow (next message from the user will be treated as a reply to a comment)
+# For reply flow: next message treated as reply
 user_reply_state: dict = {}  # {user_id: {"confession_id": int, "parent_comment_id": int, "page": int}}
+# Profile edit flows: track awaiting input
+profile_flow_state: dict = {}  # {user_id: {"await": "bio"|"nick"}}
 
 # ------------------ DB helper functions ------------------
 def _safe_insert(table: str, payload: dict):
@@ -98,10 +124,8 @@ def _safe_insert(table: str, payload: dict):
     try:
         return supabase.table(table).insert(payload).execute()
     except APIError as e:
-        # Try to detect missing column error and retry with minimal payload
         msg = getattr(e, "args", [None])[0]
         if isinstance(msg, dict) and "message" in msg and "Could not find the" in msg["message"]:
-            # filter payload to only primitive text fields (best-effort)
             reduced = {k: v for k, v in payload.items() if isinstance(v, (str, int, float, bool, type(None)))}
             try:
                 return supabase.table(table).insert(reduced).execute()
@@ -110,18 +134,14 @@ def _safe_insert(table: str, payload: dict):
         raise
 
 def db_add_confession(user_id: str, text: str) -> int:
-    # Try with recommended fields - fallback handled in _safe_insert
     payload = {"user_id": user_id, "text": text, "is_approved": False}
     res = _safe_insert("confessions", payload)
-    # server may return created row in res.data
     try:
         return int(res.data[0]["id"])
     except Exception:
-        # if no row data returned, attempt to fetch last inserted by text+user (best-effort)
         r = supabase.table("confessions").select("*").eq("user_id", user_id).eq("text", text).order("id", {"ascending": False}).limit(1).execute()
         if r.data:
             return int(r.data[0]["id"])
-        # as last resort raise
         raise RuntimeError("Could not determine confession id after insert")
 
 def db_get_confession(conf_id: int) -> Optional[dict]:
@@ -129,11 +149,9 @@ def db_get_confession(conf_id: int) -> Optional[dict]:
     return r.data[0] if r.data else None
 
 def db_set_confession_published(conf_id: int, channel_msg_id: int):
-    # update; if column doesn't exist will be ignored by Supabase - but we try
     try:
         supabase.table("confessions").update({"is_approved": True, "channel_msg_id": channel_msg_id}).eq("id", conf_id).execute()
     except Exception:
-        # fallback: try to update only channel_msg_id
         try:
             supabase.table("confessions").update({"channel_msg_id": channel_msg_id}).eq("id", conf_id).execute()
         except Exception:
@@ -176,16 +194,17 @@ def db_get_comment(comment_id: int) -> Optional[dict]:
     return r.data[0] if r.data else None
 
 def db_count_comments(confession_id: int) -> int:
-    # Use exact count if supported
     r = supabase.table("comments").select("id", count="exact").eq("confession_id", confession_id).execute()
     return int(r.count or 0)
 
 def db_delete_comment(comment_id: int):
     try:
+        # delete the target comment
         supabase.table("comments").delete().eq("id", comment_id).execute()
+        # optional cascade delete replies
+        supabase.table("comments").delete().eq("parent_comment_id", comment_id).execute()
     except Exception:
         pass
-    # remove votes cascade via DB FK if configured; otherwise delete votes explicitly
     try:
         supabase.table("votes").delete().eq("comment_id", comment_id).execute()
     except Exception:
@@ -233,6 +252,94 @@ def db_add_report(comment_id: int, reporting_user_id: str, reason: str) -> bool:
     except Exception:
         return False
 
+# ------------------ Supabase Profile helpers ------------------
+def db_get_user_profile(user_id: int) -> dict:
+    try:
+        r = supabase.table("profiles").select("*").eq("user_id", str(user_id)).limit(1).execute()
+        if r.data:
+            row = r.data[0]
+            return {
+                "emoji": row.get("emoji"),
+                "nickname": row.get("nickname"),
+                "bio": row.get("bio")
+            }
+        else:
+            supabase.table("profiles").insert({
+                "user_id": str(user_id),
+                "emoji": None,
+                "nickname": None,
+                "bio": None
+            }).execute()
+            return {"emoji": None, "nickname": None, "bio": None}
+    except Exception:
+        return {"emoji": None, "nickname": None, "bio": None}
+
+def db_set_profile_emoji(user_id: int, emoji: Optional[str]):
+    try:
+        supabase.table("profiles").upsert({"user_id": str(user_id), "emoji": emoji}).execute()
+    except Exception:
+        pass
+
+def db_set_profile_bio(user_id: int, bio: Optional[str]):
+    try:
+        supabase.table("profiles").upsert({"user_id": str(user_id), "bio": bio}).execute()
+    except Exception:
+        pass
+
+def db_set_profile_nickname(user_id: int, nickname: Optional[str]):
+    try:
+        supabase.table("profiles").upsert({"user_id": str(user_id), "nickname": nickname}).execute()
+    except Exception:
+        pass
+
+# ------------------ Profile UI builders ------------------
+PROFILE_EMOJIS = [
+    "🗣","👻","🥸","🧐","😇","🤠",
+    "😎","😜","🦋","👁","☠️","🐼",
+    "🐱","🐶","🦊","🦄","🐢","🤡",
+    "🤖","👽","👀","👤","🤵‍♂️","🤵‍♀️",
+    "🥷","🧚‍♀️","🙎‍♀️","🙎‍♂️","👩‍🦱","🧑‍🦱"
+]
+
+def profile_main_kb() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎨 Edit Profile", callback_data="prof_edit")],
+        [InlineKeyboardButton(text="📝 My Confessions", callback_data="prof_my_confessions")],
+        [InlineKeyboardButton(text="💬 My Comments", callback_data="prof_my_comments")]
+    ])
+    return kb
+
+def profile_edit_kb() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎨 Change Profile Emoji", callback_data="prof_edit_emoji")],
+        [InlineKeyboardButton(text="✏️ Change Nickname", callback_data="prof_edit_nick")],
+        [InlineKeyboardButton(text="📝 Set/Update Bio", callback_data="prof_edit_bio")],
+        [InlineKeyboardButton(text="🔙 Back to Profile", callback_data="prof_back_profile")]
+    ])
+    return kb
+
+def emoji_picker_kb() -> InlineKeyboardMarkup:
+    rows = []
+    row = []
+    for i, e in enumerate(PROFILE_EMOJIS, start=1):
+        row.append(InlineKeyboardButton(text=e, callback_data=f"prof_emoji_{e}"))
+        if i % 6 == 0:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="🔙 Back to Edit Profile", callback_data="prof_back_edit")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    return kb
+
+def render_profile_text(user_id: int) -> str:
+    p = db_get_user_profile(user_id)
+    emoji = p.get("emoji") or "🙂"
+    nickname = p.get("nickname") or "Anonymous"
+    bio = p.get("bio") or "NOT SET"
+    name_line = f"{emoji} {nickname}"
+    return f"{name_line}\n\n📝 Bio: {bio}"
+
 # ------------------ Bot handlers ------------------
 # Note: aiogram handlers are registered through decorators; dp.feed_update used in webhook.
 
@@ -252,6 +359,199 @@ def _safe_reply_or_send(target_chat_id: int, reply_to_message_id: Optional[int],
             return await bot.send_message(target_chat_id, text, **kwargs)
     return _inner()
 
+# ------------------ Commands: help/rules/privacy/cancel/profile/menu ------------------
+@dp.message(Command("help"))
+async def cmd_help(message: types.Message):
+    txt = (
+        "Available commands:\n"
+        "/profile — View your profile and history\n"
+        "/help — Show help and commands\n"
+        "/rules — View the bot's rules\n"
+        "/privacy — View privacy information\n"
+        "/cancel — Cancel current action"
+    )
+    await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), txt, reply_markup=menu_reply_keyboard())
+
+@dp.message(Command("rules"))
+async def cmd_rules(message: types.Message):
+    txt = (
+        "Rules:\n"
+        "1. Be respectful. No hate speech, harassment, or threats.\n"
+        "2. No doxxing or sharing personal information.\n"
+        "3. Report inappropriate content with 🚩.\n"
+        "4. Admins may remove content that violates rules."
+    )
+    await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), txt, reply_markup=menu_reply_keyboard())
+
+@dp.message(Command("privacy"))
+async def cmd_privacy(message: types.Message):
+    txt = (
+        "Privacy:\n"
+        "- Confessions are posted anonymously when approved.\n"
+        "- Comments display only Anonymous/Nickname.\n"
+        "- Moderation events are logged to admins.\n"
+        "- For full privacy details, see the platform policy."
+    )
+    await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), txt, reply_markup=menu_reply_keyboard())
+
+@dp.message(Command("cancel"))
+async def cmd_cancel(message: types.Message):
+    user_state.pop(message.from_user.id, None)
+    user_reply_state.pop(message.from_user.id, None)
+    profile_flow_state.pop(message.from_user.id, None)
+    await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "✅ Cancelled. You're back to normal.", reply_markup=menu_reply_keyboard())
+
+@dp.message(Command("profile"))
+async def cmd_profile(message: types.Message):
+    txt = render_profile_text(message.from_user.id)
+    await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), txt, reply_markup=profile_main_kb())
+
+# Reply keyboard "Menu" trigger
+@dp.message(lambda m: (m.text or "").strip().lower() == "menu")
+async def show_menu(message: types.Message):
+    txt = "Menu:\n/profile • /help • /rules • /cancel"
+    await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), txt, reply_markup=menu_commands_inline())
+
+# Inline menu commands
+@dp.callback_query(lambda c: c.data in ("cmd_profile","cmd_help","cmd_rules","cmd_cancel"))
+async def menu_inline_commands(call: types.CallbackQuery):
+    if call.data == "cmd_profile":
+        txt = render_profile_text(call.from_user.id)
+        await bot.send_message(call.from_user.id, txt, reply_markup=profile_main_kb())
+    elif call.data == "cmd_help":
+        await bot.send_message(call.from_user.id,
+            "Available commands:\n/profile • /help • /rules • /cancel",
+            reply_markup=menu_reply_keyboard()
+        )
+    elif call.data == "cmd_rules":
+        await bot.send_message(call.from_user.id,
+            "Rules:\n1. Be respectful.\n2. No doxxing.\n3. Use 🚩 to report.\n4. Admins may remove content.",
+            reply_markup=menu_reply_keyboard()
+        )
+    elif call.data == "cmd_cancel":
+        user_state.pop(call.from_user.id, None)
+        user_reply_state.pop(call.from_user.id, None)
+        profile_flow_state.pop(call.from_user.id, None)
+        await bot.send_message(call.from_user.id, "✅ Cancelled.", reply_markup=menu_reply_keyboard())
+    await call.answer()
+
+# ------------------ Profile flows ------------------
+@dp.callback_query(lambda c: c.data == "prof_edit")
+async def prof_edit(call: types.CallbackQuery):
+    p = db_get_user_profile(call.from_user.id)
+    emoji = p.get("emoji") or "Not set"
+    nickname = p.get("nickname") or "Anonymous"
+    bio = p.get("bio") or "NOT SET"
+    txt = f"🎨 Profile Customization\n\nProfile Emoji: {emoji}\nNickname: {nickname}\nBio: {bio}"
+    await bot.send_message(call.from_user.id, txt, reply_markup=profile_edit_kb())
+    await call.answer()
+
+@dp.callback_query(lambda c: c.data == "prof_back_profile")
+async def prof_back_profile(call: types.CallbackQuery):
+    txt = render_profile_text(call.from_user.id)
+    await bot.send_message(call.from_user.id, txt, reply_markup=profile_main_kb())
+    await call.answer()
+
+@dp.callback_query(lambda c: c.data == "prof_edit_emoji")
+async def prof_edit_emoji(call: types.CallbackQuery):
+    await bot.send_message(call.from_user.id, "Choose your new profile emoji.", reply_markup=emoji_picker_kb())
+    await call.answer()
+
+@dp.callback_query(lambda c: c.data.startswith("prof_emoji_"))
+async def prof_choose_emoji(call: types.CallbackQuery):
+    emoji = call.data.split("_", 2)[2]
+    db_set_profile_emoji(call.from_user.id, emoji)
+    # Return to edit page with updated profile info
+    p = db_get_user_profile(call.from_user.id)
+    emoji_disp = p.get("emoji") or "Not set"
+    nickname = p.get("nickname") or "Anonymous"
+    bio = p.get("bio") or "NOT SET"
+    txt = f"🎨 Profile Customization\n\nProfile Emoji: {emoji_disp}\nNickname: {nickname}\nBio: {bio}"
+    await bot.send_message(call.from_user.id, "✅ Emoji updated.", reply_markup=profile_edit_kb())
+    await call.answer()
+
+@dp.callback_query(lambda c: c.data == "prof_back_edit")
+async def prof_back_edit(call: types.CallbackQuery):
+    p = db_get_user_profile(call.from_user.id)
+    emoji = p.get("emoji") or "Not set"
+    nickname = p.get("nickname") or "Anonymous"
+    bio = p.get("bio") or "NOT SET"
+    txt = f"🎨 Profile Customization\n\nProfile Emoji: {emoji}\nNickname: {nickname}\nBio: {bio}"
+    await bot.send_message(call.from_user.id, txt, reply_markup=profile_edit_kb())
+    await call.answer()
+
+@dp.callback_query(lambda c: c.data == "prof_edit_bio")
+async def prof_edit_bio(call: types.CallbackQuery):
+    profile_flow_state[call.from_user.id] = {"await": "bio"}
+    await bot.send_message(call.from_user.id, "Please send your new bio (max 250 characters). Send 'remove' to clear your bio.")
+    await bot.send_message(call.from_user.id, "Waiting for your bio...")
+    await call.answer()
+
+@dp.callback_query(lambda c: c.data == "prof_edit_nick")
+async def prof_edit_nick(call: types.CallbackQuery):
+    profile_flow_state[call.from_user.id] = {"await": "nick"}
+    await bot.send_message(call.from_user.id, "Please send your new nickname (max 32 alphanumeric characters). Send 'default' to reset to Anonymous.")
+    await bot.send_message(call.from_user.id, "Waiting for your nickname...")
+    await call.answer()
+
+# Profile input handler (bio/nickname)
+@dp.message()
+async def handle_profile_inputs(message: types.Message):
+    uid = message.from_user.id
+    st = profile_flow_state.get(uid)
+    if not st:
+        return  # not in profile flow, let other handlers process
+
+    awaiting = st.get("await")
+    txt = (message.text or "").strip()
+
+    if awaiting == "bio":
+        if txt.lower() == "remove":
+            db_set_profile_bio(uid, None)
+            profile_flow_state.pop(uid, None)
+            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "✅ Bio cleared.")
+        elif len(txt) > 250:
+            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "❌ Bio too long. Please send up to 250 characters.")
+            return
+        else:
+            db_set_profile_bio(uid, txt)
+            profile_flow_state.pop(uid, None)
+            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "✅ Bio updated.")
+        # Return to edit profile page
+        p = db_get_user_profile(uid)
+        emoji = p.get("emoji") or "Not set"
+        nickname = p.get("nickname") or "Anonymous"
+        bio = p.get("bio") or "NOT SET"
+        txtp = f"🎨 Profile Customization\n\nProfile Emoji: {emoji}\nNickname: {nickname}\nBio: {bio}"
+        await _safe_reply_or_send(message.chat.id, None, txtp, reply_markup=profile_edit_kb())
+        return
+
+    if awaiting == "nick":
+        if txt.lower() == "default":
+            db_set_profile_nickname(uid, None)
+            profile_flow_state.pop(uid, None)
+            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "✅ Nickname reset to Anonymous.")
+        else:
+            # Basic validation: alphanumeric + spaces, max 32
+            if len(txt) > 32:
+                await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "❌ Nickname too long. Max 32 characters.")
+                return
+            if not all(ch.isalnum() or ch == " " for ch in txt):
+                await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "❌ Use only letters, numbers, and spaces.")
+                return
+            db_set_profile_nickname(uid, txt)
+            profile_flow_state.pop(uid, None)
+            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "✅ Nickname updated.")
+        # Return to edit profile page
+        p = db_get_user_profile(uid)
+        emoji = p.get("emoji") or "Not set"
+        nickname = p.get("nickname") or "Anonymous"
+        bio = p.get("bio") or "NOT SET"
+        txtp = f"🎨 Profile Customization\n\nProfile Emoji: {emoji}\nNickname: {nickname}\nBio: {bio}"
+        await _safe_reply_or_send(message.chat.id, None, txtp, reply_markup=profile_edit_kb())
+        return
+
+# ------------------ Core bot flows (/start, terms, share, comments) ------------------
 # /start handler supports deep link payloads like /start conf_123
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -264,11 +564,11 @@ async def cmd_start(message: types.Message):
         try:
             conf_id = int(payload.split("_", 1)[1])
         except Exception:
-            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "Invalid confession link.")
+            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "Invalid confession link.", reply_markup=menu_reply_keyboard())
             return
         conf = db_get_confession(conf_id)
         if not conf or not conf.get("is_approved"):
-            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "Confession not found or not published.")
+            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "Confession not found or not published.", reply_markup=menu_reply_keyboard())
             return
         total = db_count_comments(conf_id)
         hub_text = f"*Confession #{conf_id}*\n\n_{conf.get('text')}_\n\nYou can always 🚩 report inappropriate comments.\n\nSelect an option below:"
@@ -320,13 +620,13 @@ async def choose_type_cb(callback: types.CallbackQuery):
     user_state[callback.from_user.id] = {"mode": callback.data, "active_conf_id": None}
     # send a private message asking for the text
     try:
-        await bot.send_message(callback.from_user.id, "✔ Okay — send your text now.")
+        await bot.send_message(callback.from_user.id, "✔ Okay — send your text now.", reply_markup=menu_reply_keyboard())
     except Exception:
         # user may not have started direct chat; reply in current chat as fallback
-        await _safe_reply_or_send(callback.message.chat.id, callback.message.message_id, "✔ Okay — send your text now.")
+        await _safe_reply_or_send(callback.message.chat.id, callback.message.message_id, "✔ Okay — send your text now.", reply_markup=menu_reply_keyboard())
     await callback.answer()
 
-# ---------- REPLY MESSAGE HANDLER (NEW) ----------
+# ---------- REPLY MESSAGE HANDLER ----------
 # This handler catches the user's reply text after they pressed ↪️ Reply
 @dp.message(lambda message: message.from_user.id in user_reply_state)
 async def handle_reply(message: types.Message):
@@ -339,8 +639,6 @@ async def handle_reply(message: types.Message):
     parent_id = state["parent_comment_id"]
 
     try:
-        # NOTE: Assuming you've updated db_add_comment to support parent_comment_id
-        # If your function signature differs, adjust accordingly.
         supabase.table("comments").insert({
             "confession_id": conf_id,
             "user_id": str(uid),
@@ -353,11 +651,12 @@ async def handle_reply(message: types.Message):
         await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "❌ Failed to post reply. Try again later.")
         return
 
-    await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), f"✅ Your reply to that comment has been added.")
+    await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "✅ Your reply has been added.", reply_markup=menu_reply_keyboard())
 
 # handle incoming messages: either confession text or comment text depending on user_state
 @dp.message()
 async def handle_message(message: types.Message):
+    # if in profile flow, let handle_profile_inputs manage it (it returns early otherwise)
     uid = message.from_user.id
     text = message.text or ""
     state = user_state.get(uid, {})
@@ -384,7 +683,7 @@ async def handle_message(message: types.Message):
             except Exception as e:
                 print("Failed to update channel markup:", e)
         # respond to user (robust)
-        await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), f"✅ Your comment on Confession #{conf_id} is live!")
+        await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), f"✅ Your comment on Confession #{conf_id} is live!", reply_markup=menu_reply_keyboard())
         user_state.pop(uid, None)
         return
 
@@ -394,7 +693,7 @@ async def handle_message(message: types.Message):
             conf_id = db_add_confession(str(uid), text)
         except Exception as e:
             print("Failed adding confession:", e, traceback.format_exc())
-            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "❌ Failed to submit confession. Try again later.")
+            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "❌ Failed to submit confession. Try again later.", reply_markup=menu_reply_keyboard())
             user_state.pop(uid, None)
             return
 
@@ -415,12 +714,12 @@ async def handle_message(message: types.Message):
         except Exception:
             # sometimes admins group may block bot or group id wrong
             print("Failed to forward confession to admin group. Check ADMIN_GROUP_ID and bot permissions.")
-            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "❌ Could not forward confession to admin group. Contact admin.")
+            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "❌ Could not forward confession to admin group. Contact admin.", reply_markup=menu_reply_keyboard())
             user_state.pop(uid, None)
             return
 
         # confirm to user
-        await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "✅ Confession sent for review!")
+        await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "✅ Confession sent for review!", reply_markup=menu_reply_keyboard())
         user_state.pop(uid, None)
         return
 
@@ -431,13 +730,23 @@ async def handle_message(message: types.Message):
     ])
     await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "What would you like to do?", reply_markup=kb)
 
-# ---------------- Callback handler for hub, browse, vote, report, admin ----------------
+# ---------------- Callback handler for hub, browse, vote, report, admin, profile ----------------
 @dp.callback_query()
 async def general_callback(call: types.CallbackQuery):
     data = call.data or ""
 
     # NOOP
     if data == "noop":
+        await call.answer()
+        return
+
+    # Menu inline commands already handled; ignore here
+    if data in ("cmd_profile","cmd_help","cmd_rules","cmd_cancel"):
+        await call.answer()
+        return
+
+    # Profile nav handled in dedicated callbacks; ignore here if matched
+    if data in ("prof_edit","prof_back_profile","prof_edit_emoji","prof_back_edit","prof_edit_bio","prof_edit_nick") or data.startswith("prof_emoji_"):
         await call.answer()
         return
 
@@ -456,24 +765,15 @@ async def general_callback(call: types.CallbackQuery):
         await call.answer()
         return
 
-    # ---------- NEW: Reply to a comment ----------
-    # reply_{comment_id}_{conf_id}_{page}
+    # Replying: reply_{comment_id}_{conf_id}_{page}
     if data.startswith("reply_"):
         try:
             _, c_id_s, conf_id_s, page_s = data.split("_")
             c_id = int(c_id_s); conf_id = int(conf_id_s); page = int(page_s)
         except:
             await call.answer("Invalid reply data"); return
-
-        user_reply_state[call.from_user.id] = {
-            "confession_id": conf_id,
-            "parent_comment_id": c_id,
-            "page": page
-        }
-
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_reply")]
-        ])
+        user_reply_state[call.from_user.id] = {"confession_id": conf_id, "parent_comment_id": c_id, "page": page}
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_reply")]])
         prompt = "📝 Type your reply to that comment:"
         try:
             await bot.send_message(call.from_user.id, prompt, reply_markup=kb)
@@ -482,7 +782,7 @@ async def general_callback(call: types.CallbackQuery):
         await call.answer()
         return
 
-    # ---------- NEW: Cancel reply ----------
+    # Cancel reply
     if data == "cancel_reply":
         user_reply_state.pop(call.from_user.id, None)
         await call.answer("Reply cancelled.")
@@ -502,17 +802,16 @@ async def general_callback(call: types.CallbackQuery):
 
         comments = db_get_comments(conf_id)
 
-        # Build mapping: parent_id -> list of replies
+        # Group replies by parent
         replies_map = {}
         for c in comments:
-            parent_id = c.get("parent_comment_id")
-            if parent_id:
-                replies_map.setdefault(parent_id, []).append(c)
+            pid = c.get("parent_comment_id")
+            if pid:
+                replies_map.setdefault(pid, []).append(c)
 
-        # Only top-level comments for pagination
+        # Top-level only for pagination
         top_level = [c for c in comments if not c.get("parent_comment_id")]
-
-        per_page = 10  # Updated: 10 top-level comments per page
+        per_page = 10  # 10 top-level comments per page
         total = len(top_level)
         total_pages = max(1, math.ceil(total / per_page))
         page = max(1, min(page, total_pages))
@@ -527,14 +826,11 @@ async def general_callback(call: types.CallbackQuery):
             await call.answer()
             return
 
-        # Show each top-level comment with replies nested and indented
+        # Show each top-level comment + its replies
         for c in chunk:
             c_id = int(c["id"])
-            u_name = c.get("username") or "Anon"
             c_text = c.get("text", "")
             likes, dislikes = db_get_vote_counts(c_id)
-
-            # Top-level
             txt = f"💬 {c_text}\n👤 *Anonymous*"
             kb = comment_vote_kb(c_id, likes, dislikes, conf_id, page)
             try:
@@ -542,7 +838,6 @@ async def general_callback(call: types.CallbackQuery):
             except Exception:
                 await _safe_reply_or_send(call.message.chat.id, None, txt, reply_markup=kb)
 
-            # Replies immediately under parent, indented
             for r in replies_map.get(c_id, []):
                 r_id = int(r["id"])
                 r_text = r.get("text", "")
@@ -555,7 +850,6 @@ async def general_callback(call: types.CallbackQuery):
                 except Exception:
                     await _safe_reply_or_send(call.message.chat.id, None, reply_txt, reply_markup=kb_r)
 
-        # pagination controls (include add comment button)
         nav_kb = pagination_kb(conf_id, page, total_pages)
         try:
             await bot.send_message(call.from_user.id, f"Displaying page {page}/{total_pages}. Total {total} Comments", reply_markup=nav_kb)
@@ -708,7 +1002,6 @@ async def general_callback(call: types.CallbackQuery):
     # Admin approve/reject from review message
     if data.startswith("admin_approve_") or data.startswith("admin_reject_"):
         parts = data.split("_")
-        # action expected like admin_approve_{id} => parts[1] == 'approve' parts[2] == id
         action = parts[1]
         conf_id = int(parts[2])
         current_text = call.message.text or ""
