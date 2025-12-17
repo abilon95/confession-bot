@@ -516,7 +516,10 @@ async def handle_profile_inputs(message: types.Message):
     st = profile_flow_state.get(uid)
     if not st:
         return  # not in profile flow, let other handlers process
-
+    
+    # 👇 Debug print to confirm profile flow 
+    print("handle_profile_inputs triggered:", st, message.text)
+    
     awaiting = st.get("await")
     txt = (message.text or "").strip()
 
@@ -671,6 +674,9 @@ async def handle_reply(message: types.Message):
 # handle incoming messages: either confession text or comment text depending on user_state
 @dp.message()
 async def handle_message(message: types.Message):
+    # 👇 Debug print goes first
+    print("handle_message triggered:", message.text)
+    
     # if in profile flow, let handle_profile_inputs manage it (it returns early otherwise)
     uid = message.from_user.id
     text = message.text or ""
@@ -748,6 +754,9 @@ async def handle_message(message: types.Message):
 # ---------------- Callback handler for hub, browse, vote, report, admin, profile ----------------
 @dp.callback_query()
 async def general_callback(call: types.CallbackQuery):
+    # 👇 Debug print goes first 
+    print("general_callback triggered:", call.data)
+    
     data = call.data or ""
 
     # NOOP
@@ -1092,4 +1101,5 @@ def health():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
 
