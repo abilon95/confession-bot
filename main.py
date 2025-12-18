@@ -706,7 +706,7 @@ async def handle_message(message: types.Message):
     # If user is currently writing a comment (active_conf_id present)
     if state.get("active_conf_id"):
         conf_id = state["active_conf_id"]
-        try:]
+        try:
             c_id = db_add_comment(conf_id, str(uid), message.from_user.username or message.from_user.full_name, text)
             print("Comment added:", c_id)
         except Exception as e:
@@ -1157,6 +1157,7 @@ def health():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
 
 
 
