@@ -702,23 +702,47 @@ async def cmd_start(message: types.Message):
     parts = text.split(maxsplit=1)
     if len(parts) > 1:
         payload = parts[1]
+
+    # Deep link: /start conf_<id>
     if payload and payload.startswith("conf_"):
         try:
             conf_id = int(payload.split("_", 1)[1])
         except Exception:
-            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "Invalid confession link.", reply_markup=menu_reply_keyboard())
+            await _safe_reply_or_send(
+                message.chat.id,
+                getattr(message, "message_id", None),
+                "Invalid confession link.",
+                reply_markup=menu_reply_keyboard()
+            )
             return
+
         conf = db_get_confession(conf_id)
         if not conf or not conf.get("is_approved"):
-            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "Confession not found or not published.", reply_markup=menu_reply_keyboard())
+            await _safe_reply_or_send(
+                message.chat.id,
+                getattr(message, "message_id", None),
+                "Confession not found or not published.",
+                reply_markup=menu_reply_keyboard()
+            )
             return
+
         total = db_count_comments(conf_id)
-        hub_text = f"*Confession #{conf_id}*\n\n_{conf.get('text')}_\n\nYou can always 🚩 report inappropriate comments.\n\nSelect an option below:"
-        kb = hub_keyboard(conf_id, total)
-        await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), hub_text, reply_markup=kb)
+        hub_text = (
+            f"*Confession #{conf_id}*\n\n"
+            f"_{conf.get('text')}_\n\n"
+            "Select an option below:"
+        )
+
+        kb = hub_keyboard(conf_id, total)  # ➕ Add Comment / 📂 Browse Comments
+        await _safe_reply_or_send(
+            message.chat.id,
+            getattr(message, "message_id", None),
+            hub_text,
+            reply_markup=kb
+        )
         return
 
-    # Normal /start -> Terms or menu depending on user state
+    # Normal /start flow (no payload)
     if message.from_user.id not in accepted_terms:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Accept Terms", callback_data="accept_terms")],
@@ -728,14 +752,26 @@ async def cmd_start(message: types.Message):
             "📜 *Terms & Conditions*\n\n"
             "1. Admins will review your message.\n"
             "2. Approved messages are posted anonymously.\n"
-            "3. Any Comments containing inappropriate content will be removed.\n\nClick *Accept* to continue."
+            "3. Any Comments containing inappropriate content will be removed.\n\n"
+            "Click *Accept* to continue."
         )
-        await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), terms_text, reply_markup=kb)
+        await _safe_reply_or_send(
+            message.chat.id,
+            getattr(message, "message_id", None),
+            terms_text,
+            reply_markup=kb
+        )
     else:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="💬 Share Experience", callback_data="share_experience")],
             [InlineKeyboardButton(text="💭 Share Thought", callback_data="share_thought")]
         ])
+        await _safe_reply_or_send(
+            message.chat.id,
+            getattr(message, "message_id", None),
+            "What do you want to share?",
+            reply_markup=kb
+        )
         await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "What do you want to share?", reply_markup=kb)
 
 # Accept / decline Terms callbacks
@@ -1120,3 +1156,4 @@ def health():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
