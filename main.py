@@ -26,16 +26,6 @@ from supabase import create_client
 from postgrest.exceptions import APIError 
 from aiogram.types import BotCommand
 
-async def set_bot_commands(bot: Bot):
-    commands = [
-        BotCommand(command="profile", description="View your profile and history"),
-        BotCommand(command="help", description="Show help and commands"),
-        BotCommand(command="rules", description="View the bot's rules"),
-        BotCommand(command="cancel", description="Cancel current action")
-    ]
-    await bot.set_my_commands(commands)
-
-
 # ------------------ Environment (exact names) ------------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_GROUP_ID = int(os.environ.get("ADMIN_GROUP_ID", "0"))
@@ -58,8 +48,13 @@ app = FastAPI()
 
 @app.on_event("startup")
 async def on_startup():
-    await set_bot_commands(bot)
-
+    await bot.set_my_commands([
+        BotCommand(command="profile", description="View profile"),
+        BotCommand(command="help", description="Help"),
+        BotCommand(command="rules", description="Rules"),
+        BotCommand(command="cancel", description="Cancel")
+    ])
+    
 # ------------------ Helpers / UI Builders ------------------
 def build_channel_markup(bot_username: str, conf_id: int, count: int) -> InlineKeyboardMarkup:
     """Button on the channel post that deep-links into bot start with conf payload."""
@@ -1101,5 +1096,6 @@ def health():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
 
 
