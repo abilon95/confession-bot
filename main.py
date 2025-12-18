@@ -1124,8 +1124,8 @@ async def general_callback(call: types.CallbackQuery):
 # ------------------ Webhook route (FastAPI) ------------------
 @app.post("/")
 async def webhook(request: Request):
-    print("Webhook received:", data)  # 👈 add this
     data = await request.json()
+    print("Webhook received:", data)  # 👈 add this
     try:
         update = types.Update(**data)
     except Exception:
@@ -1157,6 +1157,7 @@ def health():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
 
 
 
