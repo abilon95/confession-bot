@@ -72,9 +72,9 @@ async def set_bot_commands(bot: Bot):
     Simplified per Abel's request: /profile, /rules, /cancel only.
     """
     commands = [
+        BotCommand(command="share_confession", description="💬 Share a new confession"),
         BotCommand(command="profile", description="View your profile and history"),
         BotCommand(command="rules", description="View the bot's rules"),
-        BotCommand(command="cancel", description="Cancel current action"),
     ]
     await bot.set_my_commands(commands)
 
@@ -455,6 +455,13 @@ async def cmd_start(message: types.Message):
         ])
         await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "What do you want to share?", reply_markup=kb)
 
+@dp.message(Command("share_confession"))
+async def cmd_share_confession(message: types.Message):
+    print("cmd_share_confession triggered:", message.text)
+    user_state[message.from_user.id] = {"mode": "share_confession", "active_conf_id": None}
+    await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None),
+                              "📝 Okay — send your confession text now.", reply_markup=menu_reply_keyboard())
+
 @dp.message(Command("profile"))
 async def cmd_profile(message: types.Message):
     print("cmd_profile triggered:", message.text)
@@ -472,14 +479,6 @@ async def cmd_rules(message: types.Message):
         "4. Admins may remove content that violates rules."
     )
     await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), txt, reply_markup=menu_reply_keyboard())
-
-@dp.message(Command("cancel"))
-async def cmd_cancel(message: types.Message):
-    print("cmd_cancel triggered:", message.text)
-    user_state.pop(message.from_user.id, None)
-    user_reply_state.pop(message.from_user.id, None)
-    profile_flow_state.pop(message.from_user.id, None)
-    await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "✅ Cancelled. You're back to normal.", reply_markup=menu_reply_keyboard())
 
 # Reply keyboard "Menu" trigger
 @dp.message(lambda m: (m.text or "").strip().lower() == "menu")
@@ -1175,3 +1174,4 @@ Menu simplification:
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
