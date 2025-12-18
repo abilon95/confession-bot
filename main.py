@@ -23,8 +23,19 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import Command
 from supabase import create_client
-from postgrest.exceptions import APIError 
+from postgrest.exceptions import APIError
 from aiogram.types import BotCommand
+
+# ------------------ Bot command menu (persistent) ------------------
+async def set_bot_commands(bot: Bot):
+    commands = [
+        BotCommand(command="profile", description="View your profile and history"),
+        BotCommand(command="help", description="Show help and commands"),
+        BotCommand(command="rules", description="View the bot's rules"),
+        BotCommand(command="privacy", description="View privacy info"),
+        BotCommand(command="cancel", description="Cancel current action")
+    ]
+    await bot.set_my_commands(commands)
 
 # ------------------ Environment (exact names) ------------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -48,13 +59,9 @@ app = FastAPI()
 
 @app.on_event("startup")
 async def on_startup():
-    await bot.set_my_commands([
-        BotCommand(command="profile", description="View profile"),
-        BotCommand(command="help", description="Help"),
-        BotCommand(command="rules", description="Rules"),
-        BotCommand(command="cancel", description="Cancel")
-    ])
-    
+    await set_bot_commands(bot)
+    print("Startup: bot commands set, app is ready.")
+
 # ------------------ Helpers / UI Builders ------------------
 def build_channel_markup(bot_username: str, conf_id: int, count: int) -> InlineKeyboardMarkup:
     """Button on the channel post that deep-links into bot start with conf payload."""
@@ -71,7 +78,6 @@ def hub_keyboard(conf_id: int, total_comments: int) -> InlineKeyboardMarkup:
     return kb
 
 def comment_vote_kb(comment_id: int, likes: int, dislikes: int, conf_id: int, page: int) -> InlineKeyboardMarkup:
-    # Reply button on its own row below the three buttons
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text=f"👍 {likes}", callback_data=f"vote_{comment_id}_up_{conf_id}_{page}"),
@@ -123,6 +129,8 @@ user_state: dict = {}  # {user_id: {...}}
 user_reply_state: dict = {}  # {user_id: {"confession_id": int, "parent_comment_id": int, "page": int}}
 # Profile edit flows: track awaiting input
 profile_flow_state: dict = {}  # {user_id: {"await": "bio"|"nick"}}
+# Accepted terms set (split from user_state to avoid confusion)
+accepted_terms: set = set()
 
 # ------------------ DB helper functions ------------------
 def _safe_insert(table: str, payload: dict):
@@ -372,6 +380,7 @@ def _safe_reply_or_send(target_chat_id: int, reply_to_message_id: Optional[int],
 # ------------------ Commands: help/rules/privacy/cancel/profile/menu ------------------
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
+    print("cmd_help triggered:", message.text)
     txt = (
         "Available commands:\n"
         "/profile — View your profile and history\n"
@@ -384,6 +393,7 @@ async def cmd_help(message: types.Message):
 
 @dp.message(Command("rules"))
 async def cmd_rules(message: types.Message):
+    print("cmd_rules triggered:", message.text)
     txt = (
         "Rules:\n"
         "1. Be respectful. No hate speech, harassment, or threats.\n"
@@ -395,6 +405,7 @@ async def cmd_rules(message: types.Message):
 
 @dp.message(Command("privacy"))
 async def cmd_privacy(message: types.Message):
+    print("cmd_privacy triggered:", message.text)
     txt = (
         "Privacy:\n"
         "- Confessions are posted anonymously when approved.\n"
@@ -406,6 +417,7 @@ async def cmd_privacy(message: types.Message):
 
 @dp.message(Command("cancel"))
 async def cmd_cancel(message: types.Message):
+    print("cmd_cancel triggered:", message.text)
     user_state.pop(message.from_user.id, None)
     user_reply_state.pop(message.from_user.id, None)
     profile_flow_state.pop(message.from_user.id, None)
@@ -413,18 +425,21 @@ async def cmd_cancel(message: types.Message):
 
 @dp.message(Command("profile"))
 async def cmd_profile(message: types.Message):
+    print("cmd_profile triggered:", message.text)
     txt = render_profile_text(message.from_user.id)
     await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), txt, reply_markup=profile_main_kb())
 
 # Reply keyboard "Menu" trigger
 @dp.message(lambda m: (m.text or "").strip().lower() == "menu")
 async def show_menu(message: types.Message):
+    print("show_menu triggered:", message.text)
     txt = "Menu:\n/profile • /help • /rules • /cancel"
     await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), txt, reply_markup=menu_commands_inline())
 
 # Inline menu commands
 @dp.callback_query(lambda c: c.data in ("cmd_profile","cmd_help","cmd_rules","cmd_cancel"))
 async def menu_inline_commands(call: types.CallbackQuery):
+    print("menu_inline_commands triggered:", call.data)
     if call.data == "cmd_profile":
         txt = render_profile_text(call.from_user.id)
         await bot.send_message(call.from_user.id, txt, reply_markup=profile_main_kb())
@@ -448,6 +463,7 @@ async def menu_inline_commands(call: types.CallbackQuery):
 # ------------------ Profile flows ------------------
 @dp.callback_query(lambda c: c.data == "prof_edit")
 async def prof_edit(call: types.CallbackQuery):
+    print("prof_edit triggered")
     p = db_get_user_profile(call.from_user.id)
     emoji = p.get("emoji") or "Not set"
     nickname = p.get("nickname") or "Anonymous"
@@ -458,17 +474,20 @@ async def prof_edit(call: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data == "prof_back_profile")
 async def prof_back_profile(call: types.CallbackQuery):
+    print("prof_back_profile triggered")
     txt = render_profile_text(call.from_user.id)
     await bot.send_message(call.from_user.id, txt, reply_markup=profile_main_kb())
     await call.answer()
 
 @dp.callback_query(lambda c: c.data == "prof_edit_emoji")
 async def prof_edit_emoji(call: types.CallbackQuery):
+    print("prof_edit_emoji triggered")
     await bot.send_message(call.from_user.id, "Choose your new profile emoji.", reply_markup=emoji_picker_kb())
     await call.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("prof_emoji_"))
 async def prof_choose_emoji(call: types.CallbackQuery):
+    print("prof_choose_emoji triggered:", call.data)
     emoji = call.data.split("_", 2)[2]
     db_set_profile_emoji(call.from_user.id, emoji)
     # Return to edit page with updated profile info
@@ -482,6 +501,7 @@ async def prof_choose_emoji(call: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data == "prof_back_edit")
 async def prof_back_edit(call: types.CallbackQuery):
+    print("prof_back_edit triggered")
     p = db_get_user_profile(call.from_user.id)
     emoji = p.get("emoji") or "Not set"
     nickname = p.get("nickname") or "Anonymous"
@@ -492,6 +512,7 @@ async def prof_back_edit(call: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data == "prof_edit_bio")
 async def prof_edit_bio(call: types.CallbackQuery):
+    print("prof_edit_bio triggered")
     profile_flow_state[call.from_user.id] = {"await": "bio"}
     await bot.send_message(call.from_user.id, "Please send your new bio (max 250 characters). Send 'remove' to clear your bio.")
     await bot.send_message(call.from_user.id, "Waiting for your bio...")
@@ -499,22 +520,22 @@ async def prof_edit_bio(call: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data == "prof_edit_nick")
 async def prof_edit_nick(call: types.CallbackQuery):
+    print("prof_edit_nick triggered")
     profile_flow_state[call.from_user.id] = {"await": "nick"}
     await bot.send_message(call.from_user.id, "Please send your new nickname (max 32 alphanumeric characters). Send 'default' to reset to Anonymous.")
     await bot.send_message(call.from_user.id, "Waiting for your nickname...")
     await call.answer()
 
-# Profile input handler (bio/nickname)
+# ------------------ Handler order starts here ------------------
+# 1) Profile input handler (bio/nickname) — must be FIRST among message handlers
 @dp.message()
 async def handle_profile_inputs(message: types.Message):
     uid = message.from_user.id
     st = profile_flow_state.get(uid)
     if not st:
         return  # not in profile flow, let other handlers process
-    
-    # 👇 Debug print to confirm profile flow 
     print("handle_profile_inputs triggered:", st, message.text)
-    
+
     awaiting = st.get("await")
     txt = (message.text or "").strip()
 
@@ -564,85 +585,10 @@ async def handle_profile_inputs(message: types.Message):
         await _safe_reply_or_send(message.chat.id, None, txtp, reply_markup=profile_edit_kb())
         return
 
-# ------------------ Core bot flows (/start, terms, share, comments) ------------------
-# /start handler supports deep link payloads like /start conf_123
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    text = message.text or ""
-    payload = None
-    parts = text.split(maxsplit=1)
-    if len(parts) > 1:
-        payload = parts[1]
-    if payload and payload.startswith("conf_"):
-        try:
-            conf_id = int(payload.split("_", 1)[1])
-        except Exception:
-            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "Invalid confession link.", reply_markup=menu_reply_keyboard())
-            return
-        conf = db_get_confession(conf_id)
-        if not conf or not conf.get("is_approved"):
-            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "Confession not found or not published.", reply_markup=menu_reply_keyboard())
-            return
-        total = db_count_comments(conf_id)
-        hub_text = f"*Confession #{conf_id}*\n\n_{conf.get('text')}_\n\nYou can always 🚩 report inappropriate comments.\n\nSelect an option below:"
-        kb = hub_keyboard(conf_id, total)
-        await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), hub_text, reply_markup=kb)
-        return
-
-    # Normal /start -> Terms or menu depending on user state
-    accepted_set = user_state.get("accepted_terms", set())
-    if message.from_user.id not in accepted_set:
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Accept Terms", callback_data="accept_terms")],
-            [InlineKeyboardButton(text="❌ Decline", callback_data="decline_terms")]
-        ])
-        terms_text = (
-            "📜 *Terms & Conditions*\n\n"
-            "1. Admins will review your message.\n"
-            "2. Approved messages are posted anonymously.\n"
-            "3. Any Comments containing inappropriate content will be removed.\n\nClick *Accept* to continue."
-        )
-        await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), terms_text, reply_markup=kb)
-    else:
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💬 Share Experience", callback_data="share_experience")],
-            [InlineKeyboardButton(text="💭 Share Thought", callback_data="share_thought")]
-        ])
-        await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "What do you want to share?", reply_markup=kb)
-
-# Accept / decline Terms callbacks
-@dp.callback_query(lambda c: c.data == "accept_terms" or c.data == "decline_terms")
-async def accept_terms_cb(callback: types.CallbackQuery):
-    if callback.data == "decline_terms":
-        await callback.message.edit_text("❌ You declined.")
-        await callback.answer()
-        return
-    accepted = user_state.get("accepted_terms", set())
-    accepted.add(callback.from_user.id)
-    user_state["accepted_terms"] = accepted
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💬 Share Experience", callback_data="share_experience")],
-        [InlineKeyboardButton(text="💭 Share Thought", callback_data="share_thought")]
-    ])
-    await callback.message.edit_text("What are you sharing?", reply_markup=kb)
-    await callback.answer()
-
-# choose type -> prompt to send text
-@dp.callback_query(lambda c: c.data in ("share_experience", "share_thought"))
-async def choose_type_cb(callback: types.CallbackQuery):
-    user_state[callback.from_user.id] = {"mode": callback.data, "active_conf_id": None}
-    # send a private message asking for the text
-    try:
-        await bot.send_message(callback.from_user.id, "✔ Okay — send your text now.", reply_markup=menu_reply_keyboard())
-    except Exception:
-        # user may not have started direct chat; reply in current chat as fallback
-        await _safe_reply_or_send(callback.message.chat.id, callback.message.message_id, "✔ Okay — send your text now.", reply_markup=menu_reply_keyboard())
-    await callback.answer()
-
-# ---------- REPLY MESSAGE HANDLER ----------
-# This handler catches the user's reply text after they pressed ↪️ Reply
+# 2) Reply message handler — second
 @dp.message(lambda message: message.from_user.id in user_reply_state)
 async def handle_reply(message: types.Message):
+    print("handle_reply triggered:", message.text)
     uid = message.from_user.id
     state = user_reply_state.pop(uid, None)
     if not state:
@@ -666,13 +612,11 @@ async def handle_reply(message: types.Message):
 
     await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "✅ Your reply has been added.", reply_markup=menu_reply_keyboard())
 
-# handle incoming messages: either confession text or comment text depending on user_state
+# 3) General message handler — third
 @dp.message()
 async def handle_message(message: types.Message):
-    # 👇 Debug print goes first
     print("handle_message triggered:", message.text)
-    
-    # if in profile flow, let handle_profile_inputs manage it (it returns early otherwise)
+
     uid = message.from_user.id
     text = message.text or ""
     state = user_state.get(uid, {})
@@ -682,6 +626,7 @@ async def handle_message(message: types.Message):
         conf_id = state["active_conf_id"]
         try:
             c_id = db_add_comment(conf_id, str(uid), message.from_user.username or message.from_user.full_name, text)
+            print("Comment added:", c_id)
         except Exception as e:
             print("Failed adding comment:", e, traceback.format_exc())
             await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "❌ Failed to post comment. Try again later.")
@@ -707,6 +652,7 @@ async def handle_message(message: types.Message):
     if state.get("mode") in ("share_experience", "share_thought"):
         try:
             conf_id = db_add_confession(str(uid), text)
+            print("Confession added:", conf_id)
         except Exception as e:
             print("Failed adding confession:", e, traceback.format_exc())
             await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "❌ Failed to submit confession. Try again later.", reply_markup=menu_reply_keyboard())
@@ -746,12 +692,89 @@ async def handle_message(message: types.Message):
     ])
     await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "What would you like to do?", reply_markup=kb)
 
+# ---------------- Core bot flows (/start, terms, share, comments) ----------------
+# /start handler supports deep link payloads like /start conf_123
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    print("cmd_start triggered:", message.text)
+    text = message.text or ""
+    payload = None
+    parts = text.split(maxsplit=1)
+    if len(parts) > 1:
+        payload = parts[1]
+    if payload and payload.startswith("conf_"):
+        try:
+            conf_id = int(payload.split("_", 1)[1])
+        except Exception:
+            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "Invalid confession link.", reply_markup=menu_reply_keyboard())
+            return
+        conf = db_get_confession(conf_id)
+        if not conf or not conf.get("is_approved"):
+            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "Confession not found or not published.", reply_markup=menu_reply_keyboard())
+            return
+        total = db_count_comments(conf_id)
+        hub_text = f"*Confession #{conf_id}*\n\n_{conf.get('text')}_\n\nYou can always 🚩 report inappropriate comments.\n\nSelect an option below:"
+        kb = hub_keyboard(conf_id, total)
+        await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), hub_text, reply_markup=kb)
+        return
+
+    # Normal /start -> Terms or menu depending on user state
+    if message.from_user.id not in accepted_terms:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Accept Terms", callback_data="accept_terms")],
+            [InlineKeyboardButton(text="❌ Decline", callback_data="decline_terms")]
+        ])
+        terms_text = (
+            "📜 *Terms & Conditions*\n\n"
+            "1. Admins will review your message.\n"
+            "2. Approved messages are posted anonymously.\n"
+            "3. Any Comments containing inappropriate content will be removed.\n\nClick *Accept* to continue."
+        )
+        await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), terms_text, reply_markup=kb)
+    else:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💬 Share Experience", callback_data="share_experience")],
+            [InlineKeyboardButton(text="💭 Share Thought", callback_data="share_thought")]
+        ])
+        await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "What do you want to share?", reply_markup=kb)
+
+# Accept / decline Terms callbacks
+@dp.callback_query(lambda c: c.data == "accept_terms" or c.data == "decline_terms")
+async def accept_terms_cb(callback: types.CallbackQuery):
+    print("accept_terms_cb triggered:", callback.data)
+    if callback.data == "decline_terms":
+        await callback.message.edit_text("❌ You declined.")
+        await callback.answer()
+        return
+    accepted_terms.add(callback.from_user.id)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💬 Share Experience", callback_data="share_experience")],
+        [InlineKeyboardButton(text="💭 Share Thought", callback_data="share_thought")]
+    ])
+    try:
+        await callback.message.edit_text("What are you sharing?", reply_markup=kb)
+    except Exception:
+        await _safe_reply_or_send(callback.message.chat.id, callback.message.message_id, "What are you sharing?", reply_markup=kb)
+    await callback.answer()
+
+# choose type -> prompt to send text
+@dp.callback_query(lambda c: c.data in ("share_experience", "share_thought"))
+async def choose_type_cb(callback: types.CallbackQuery):
+    print("choose_type_cb triggered:", callback.data)
+    user_state[callback.from_user.id] = {"mode": callback.data, "active_conf_id": None}
+    # send a private message asking for the text
+    try:
+        await bot.send_message(callback.from_user.id, "✔ Okay — send your text now.", reply_markup=menu_reply_keyboard())
+    except Exception:
+        # user may not have started direct chat; reply in current chat as fallback
+        await _safe_reply_or_send(callback.message.chat.id, callback.message.message_id, "✔ Okay — send your text now.", reply_markup=menu_reply_keyboard())
+    await callback.answer()
+
 # ---------------- Callback handler for hub, browse, vote, report, admin, profile ----------------
 @dp.callback_query()
 async def general_callback(call: types.CallbackQuery):
-    # 👇 Debug print goes first 
     print("general_callback triggered:", call.data)
-    
+
     data = call.data or ""
 
     # NOOP
@@ -970,7 +993,7 @@ async def general_callback(call: types.CallbackQuery):
             await bot.send_message(call.from_user.id, f"✅ Report submitted successfully for reason: *{reason}*")
         except Exception:
             print("Failed to send report to admins")
-            await _safe_reply_or_send(call.message.chat.id, None, "✅ Report submitted successfully for reason: *{reason}*")
+            await _safe_reply_or_send(call.message.chat.id, None, f"✅ Report submitted successfully for reason: {reason}")
         user_state.pop(call.from_user.id, None)
         await call.answer()
         return
@@ -1070,6 +1093,7 @@ async def webhook(request: Request):
         update = types.Update(**data)
     except Exception:
         # invalid update
+        print("Webhook: invalid update payload")
         return {"ok": False, "error": "invalid update"}
     try:
         await dp.feed_update(bot, update)
@@ -1096,6 +1120,3 @@ def health():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
-
-
-
