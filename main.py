@@ -526,6 +526,88 @@ async def prof_edit_nick(call: types.CallbackQuery):
     await bot.send_message(call.from_user.id, "Waiting for your nickname...")
     await call.answer()
 
+# ---------------- Core bot flows (/start, terms, share, comments) ----------------
+# /start handler supports deep link payloads like /start conf_123
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    print("cmd_start triggered:", message.text)
+    text = message.text or ""
+    payload = None
+    parts = text.split(maxsplit=1)
+    if len(parts) > 1:
+        payload = parts[1]
+
+    # Deep link: /start conf_<id>
+    if payload and payload.startswith("conf_"):
+        try:
+            conf_id = int(payload.split("_", 1)[1])
+        except Exception:
+            await _safe_reply_or_send(
+                message.chat.id,
+                getattr(message, "message_id", None),
+                "Invalid confession link.",
+                reply_markup=menu_reply_keyboard()
+            )
+            return
+
+        conf = db_get_confession(conf_id)
+        if not conf or not conf.get("is_approved"):
+            await _safe_reply_or_send(
+                message.chat.id,
+                getattr(message, "message_id", None),
+                "Confession not found or not published.",
+                reply_markup=menu_reply_keyboard()
+            )
+            return
+
+        total = db_count_comments(conf_id)
+        hub_text = (
+            f"*Confession #{conf_id}*\n\n"
+            f"_{conf.get('text')}_\n\n"
+            "Select an option below:"
+        )
+
+        kb = hub_keyboard(conf_id, total)  # ➕ Add Comment / 📂 Browse Comments
+        await _safe_reply_or_send(
+            message.chat.id,
+            getattr(message, "message_id", None),
+            hub_text,
+            reply_markup=kb
+        )
+        return
+
+    # Normal /start flow (no payload)
+    if message.from_user.id not in accepted_terms:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Accept Terms", callback_data="accept_terms")],
+            [InlineKeyboardButton(text="❌ Decline", callback_data="decline_terms")]
+        ])
+        terms_text = (
+            "📜 *Terms & Conditions*\n\n"
+            "1. Admins will review your message.\n"
+            "2. Approved messages are posted anonymously.\n"
+            "3. Any Comments containing inappropriate content will be removed.\n\n"
+            "Click *Accept* to continue."
+        )
+        await _safe_reply_or_send(
+            message.chat.id,
+            getattr(message, "message_id", None),
+            terms_text,
+            reply_markup=kb
+        )
+    else:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💬 Share Experience", callback_data="share_experience")],
+            [InlineKeyboardButton(text="💭 Share Thought", callback_data="share_thought")]
+        ])
+        await _safe_reply_or_send(
+            message.chat.id,
+            getattr(message, "message_id", None),
+            "What do you want to share?",
+            reply_markup=kb
+        )
+        await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "What do you want to share?", reply_markup=kb)
+
 # ------------------ Handler order starts here ------------------
 # 1) Profile input handler (bio/nickname) — must be FIRST among message handlers
 @dp.message()
@@ -624,7 +706,7 @@ async def handle_message(message: types.Message):
     # If user is currently writing a comment (active_conf_id present)
     if state.get("active_conf_id"):
         conf_id = state["active_conf_id"]
-        try:
+        try:]
             c_id = db_add_comment(conf_id, str(uid), message.from_user.username or message.from_user.full_name, text)
             print("Comment added:", c_id)
         except Exception as e:
@@ -691,88 +773,6 @@ async def handle_message(message: types.Message):
         [InlineKeyboardButton(text="💭 Share Thought", callback_data="share_thought")]
     ])
     await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "What would you like to do?", reply_markup=kb)
-
-# ---------------- Core bot flows (/start, terms, share, comments) ----------------
-# /start handler supports deep link payloads like /start conf_123
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    print("cmd_start triggered:", message.text)
-    text = message.text or ""
-    payload = None
-    parts = text.split(maxsplit=1)
-    if len(parts) > 1:
-        payload = parts[1]
-
-    # Deep link: /start conf_<id>
-    if payload and payload.startswith("conf_"):
-        try:
-            conf_id = int(payload.split("_", 1)[1])
-        except Exception:
-            await _safe_reply_or_send(
-                message.chat.id,
-                getattr(message, "message_id", None),
-                "Invalid confession link.",
-                reply_markup=menu_reply_keyboard()
-            )
-            return
-
-        conf = db_get_confession(conf_id)
-        if not conf or not conf.get("is_approved"):
-            await _safe_reply_or_send(
-                message.chat.id,
-                getattr(message, "message_id", None),
-                "Confession not found or not published.",
-                reply_markup=menu_reply_keyboard()
-            )
-            return
-
-        total = db_count_comments(conf_id)
-        hub_text = (
-            f"*Confession #{conf_id}*\n\n"
-            f"_{conf.get('text')}_\n\n"
-            "Select an option below:"
-        )
-
-        kb = hub_keyboard(conf_id, total)  # ➕ Add Comment / 📂 Browse Comments
-        await _safe_reply_or_send(
-            message.chat.id,
-            getattr(message, "message_id", None),
-            hub_text,
-            reply_markup=kb
-        )
-        return
-
-    # Normal /start flow (no payload)
-    if message.from_user.id not in accepted_terms:
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Accept Terms", callback_data="accept_terms")],
-            [InlineKeyboardButton(text="❌ Decline", callback_data="decline_terms")]
-        ])
-        terms_text = (
-            "📜 *Terms & Conditions*\n\n"
-            "1. Admins will review your message.\n"
-            "2. Approved messages are posted anonymously.\n"
-            "3. Any Comments containing inappropriate content will be removed.\n\n"
-            "Click *Accept* to continue."
-        )
-        await _safe_reply_or_send(
-            message.chat.id,
-            getattr(message, "message_id", None),
-            terms_text,
-            reply_markup=kb
-        )
-    else:
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💬 Share Experience", callback_data="share_experience")],
-            [InlineKeyboardButton(text="💭 Share Thought", callback_data="share_thought")]
-        ])
-        await _safe_reply_or_send(
-            message.chat.id,
-            getattr(message, "message_id", None),
-            "What do you want to share?",
-            reply_markup=kb
-        )
-        await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "What do you want to share?", reply_markup=kb)
 
 # Accept / decline Terms callbacks
 @dp.callback_query(lambda c: c.data == "accept_terms" or c.data == "decline_terms")
@@ -1157,5 +1157,6 @@ def health():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
 
 
