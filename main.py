@@ -472,26 +472,24 @@ async def cmd_profile(message: types.Message):
 async def cmd_rules(message: types.Message):
     print("cmd_rules triggered:", message.text)
     txt = (
-        "Rules:\n"
-        "1. Share from the Heart /n"
+        "Rules: \n\n"
+        "1. Share from the Heart \n"
         "This space is for your secrets, feelings, and stories. Please don't use it for random questions or things you could find on Google. Let’s keep this a place for real human connection.\n"
-        "2. Kindness Above All /n"
+        "2. Kindness Above All \n"
         "You can talk about anything, but please be kind. We do not allow hate, mean words, or bullying. Speak your truth without hurting others.\n"
-        "3. No Full Names /n"
-        "To protect the privacy of our peers, full names are no longer allowed. Confessions mentioning a full name will not be approved. /n"
-        "#  How to mention someone:* Use their first initial (e.g., "K.") or a brief description (e.g., "the student who always sits by the window"). /n"
-        "4. Align with Community Values. /n"
-        "All confessions must align with the moral and ethical values of our student community. We strive to maintain a respected and safe academic environment. Content that is purely vulgar or contradicts the integrity of our community will not be posted. /n" 
-        "5. Protect Your Privacy /n"
-        "To keep everyone safe, never share private details like phone numbers, home addresses, or social media links. Some secrets are meant to stay private. /n" 
-        "6. Be Real and Honest /n"
-        "Please don’t post fake stories or send the same message many times. This community is built on honesty and trust. /n" 
-        "7. Our Helping Hands /n"
-        "Our moderators work hard to keep this a safe space. They have the right to edit or remove posts that break the rules or do not fit the spirit of the channel. Their goal is to protect the peace of this group. /n" 
-        "8. Add a Warning for Sad Stories /n"
-        "If your confession is very sad or deals with difficult topics, please put a "Trigger Warning" at the top. This helps others decide if they are ready to read it. /n"
-        "9. Keep it Safe /n"
-        "Do not post about anything illegal or dangerous. We want this to be a sanctuary for everyone. /n"
+        "3. No Full Names \n"
+        "To protect the privacy of our peers, full names are no longer allowed. Confessions mentioning a full name will not be approved. \n"
+        "#  How to mention someone:* Use their first initial (e.g., "K.") or a brief description (e.g., "the student who always sits by the window"). \n"
+        "4. Align with Community Values. \n"
+        "All confessions must align with the moral and ethical values of our student community. We strive to maintain a respected and safe academic environment. Content that is purely vulgar or contradicts the integrity of our community will not be posted. \n" 
+        "5. Protect Your Privacy \n"
+        "To keep everyone safe, never share private details like phone numbers, home addresses, or social media links. Some secrets are meant to stay private. \n"
+        "6. Be Real and Honest \n"
+        "Please don’t post fake stories or send the same message many times. This community is built on honesty and trust. \n"  remove posts that break the rules o        "Our moderators work hard to keep this a safe space. They have the right to edit or remove posts that break the rules or do not fit the spirit of the channel. Their goal is to protect the peace of this group. \n"
+        "8. Add a Warning for Sad Stories \n"
+        "If your confession is very sad or deals with difficult topics, please put a "Trigger Warning" at the top. This helps others decide if they are ready to read it. \n"
+        "9. Keep it Safe \n"
+        "Do not post about anything illegal or dangerous. We want this to be a sanctuary for everyone. \n"
         "10. Report inappropriate confessions using the direct message and comments with 🚩.\n"
         "11. Admins may remove content that violates rules."
     )
@@ -1191,6 +1189,7 @@ Menu simplification:
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
 
 
 
