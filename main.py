@@ -472,11 +472,11 @@ async def cmd_profile(message: types.Message):
 async def cmd_rules(message: types.Message):
     print("cmd_rules triggered:", message.text)
     txt = (
-        "Rules:\n"
-        "1. Be respectful. No hate speech, harassment, or threats.\n"
-        "2. No doxxing or sharing personal information.\n"
-        "3. Report inappropriate content with 🚩.\n"
-        "4. Admins may remove content that violates rules."
+        "RULES:\n"
+        "1. Be respectful. No hate speech, harassment, or threats.\n"
+        "2. No doxxing or sharing personal information.\n"
+        "3. Report inappropriate content with 🚩.\n"
+        "4. Admins may remove content that violates rules."
     )
     await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), txt, reply_markup=menu_reply_keyboard())
 
@@ -1174,6 +1174,7 @@ Menu simplification:
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
 
 
 
