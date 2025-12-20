@@ -473,10 +473,27 @@ async def cmd_rules(message: types.Message):
     print("cmd_rules triggered:", message.text)
     txt = (
         "Rules:\n"
-        "1. Be respectful. No hate speech, harassment, or threats.\n"
-        "2. No doxxing or sharing personal information.\n"
-        "3. Report inappropriate content with 🚩.\n"
-        "4. Admins may remove content that violates rules."
+        "1. Share from the Heart
+This space is for your secrets, feelings, and stories. Please don't use it for random questions or things you could find on Google. Let’s keep this a place for real human connection.\n"
+        "2. Kindness Above All
+You can talk about anything, but please be kind. We do not allow hate, mean words, or bullying. Speak your truth without hurting others.\n"
+        "3. No Full Names (Updated!)
+To protect the privacy of our peers, full names are no longer allowed. Confessions mentioning a full name will not be approved. 
+• *How to mention someone:* Use their first initial (e.g., "K.") or a brief description (e.g., "the student who always sits by the window"). /n"
+        "4. Align with Community Values
+All confessions must align with the moral and ethical values of our student community. We strive to maintain a respected and safe academic environment. Content that is purely vulgar or contradicts the integrity of our community will not be posted. /n" 
+        "5. Protect Your Privacy
+To keep everyone safe, never share private details like phone numbers, home addresses, or social media links. Some secrets are meant to stay private. /n" 
+        "6. Be Real and Honest
+Please don’t post fake stories or send the same message many times. This community is built on honesty and trust. /n" 
+        "7. Our Helping Hands
+Our moderators work hard to keep this a safe space. They have the right to edit or remove posts that break the rules or do not fit the spirit of the channel. Their goal is to protect the peace of this group. /n" 
+        "8. Add a Warning for Sad Stories
+If your confession is very sad or deals with difficult topics, please put a "Trigger Warning" at the top. This helps others decide if they are ready to read it. /n"
+        "9. Keep it Safe
+Do not post about anything illegal or dangerous. We want this to be a sanctuary for everyone. /n"
+        "10. Report inappropriate confessions using the direct message and comments with 🚩.\n"
+        "11. Admins may remove content that violates rules."
     )
     await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), txt, reply_markup=menu_reply_keyboard())
 
@@ -1174,4 +1191,5 @@ Menu simplification:
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
 
