@@ -864,7 +864,7 @@ async def browse_cb(call: types.CallbackQuery):
 
         if emoji or nickname or bio:
             display_name = f"{emoji or '🙂'} {nickname or 'Anonymous'}"
-            txt = f"💬 {c_text}\n👤 {display_name}"
+            txt = f"💬 {c_text}\n {display_name}"
             if bio:
                 txt += f"\n📝 {bio}"
         else:
@@ -890,7 +890,7 @@ async def browse_cb(call: types.CallbackQuery):
 
             if emoji_r or nickname_r or bio_r:
                 display_name_r = f"{emoji_r or '🙂'} {nickname_r or 'Anonymous'}"
-                reply_txt = f"    ↪️ Reply to \"{parent_preview}\":\n    {r_text}\n    👤 {display_name_r}"
+                reply_txt = f"    ↪️ Reply to \"{parent_preview}\":\n    {r_text}\n     {display_name_r}"
                 if bio_r:
                     reply_txt += f"\n    📝 {bio_r}"
             else:
@@ -1189,6 +1189,7 @@ Menu simplification:
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
 
 
 
