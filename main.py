@@ -651,21 +651,53 @@ async def handle_reply(message: types.Message):
 
     conf_id = state["confession_id"]
     parent_id = state["parent_comment_id"]
+
+    # Fetch profile info
+    profile = db_get_user_profile(uid)
+    emoji = profile.get("emoji") or "🙂"
+    nickname = profile.get("nickname") or "Anonymous"
+    bio = profile.get("bio") or ""
+    display_name = f"{emoji} {nickname}"
+
     try:
         supabase.table("comments").insert({
             "confession_id": conf_id,
             "user_id": str(uid),
-            "username": message.from_user.username or message.from_user.full_name,
+            "username": display_name,   # 👈 store emoji+nickname
             "text": message.text,
-            "parent_comment_id": parent_id
+            "parent_comment_id": parent_id,
+            "bio": bio
         }).execute()
     except Exception as e:
         print("Failed adding reply:", e, traceback.format_exc())
-        await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "❌ Failed to post reply. Try again later.")
+        await _safe_reply_or_send(
+            message.chat.id,
+            getattr(message, "message_id", None),
+            "❌ Failed to post reply. Try again later."
+        )
         return
 
-    await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "✅ Your reply has been added.", reply_markup=menu_reply_keyboard())
+    # Notify parent commenter
+    parent = db_get_comment(parent_id)
+    if parent:
+        parent_user_id = int(parent.get("user_id", 0))
+        if parent_user_id and parent_user_id != uid:
+            parent_preview = parent.get("text", "")[:50]
+            try:
+                await bot.send_message(
+                    parent_user_id,
+                    f"🔔 New reply to your comment:\n\n🗨️ {parent_preview}\n↪️ {message.text}",
+                    reply_markup=menu_reply_keyboard()
+                )
+            except Exception as e:
+                print("Failed to notify parent commenter:", e)
 
+    await _safe_reply_or_send(
+        message.chat.id,
+        getattr(message, "message_id", None),
+        "✅ Your reply has been added.",
+        reply_markup=menu_reply_keyboard()
+    )
 # 3) General message handler — catch-all for comments and confessions (must be last)
 @dp.message()
 async def handle_message(message: types.Message):
@@ -674,15 +706,33 @@ async def handle_message(message: types.Message):
     state = user_state.get(uid, {})
     print("handle_message triggered:", text, state)
 
-    # If user is currently writing a comment (active_conf_id present)
+    # If user is currently writing a comment
     if state.get("active_conf_id"):
         conf_id = state["active_conf_id"]
+
+        # Fetch profile info
+        profile = db_get_user_profile(uid)
+        emoji = profile.get("emoji") or "🙂"
+        nickname = profile.get("nickname") or "Anonymous"
+        bio = profile.get("bio") or ""
+
+        display_name = f"{emoji} {nickname}"
+
         try:
-            c_id = db_add_comment(conf_id, str(uid), message.from_user.username or message.from_user.full_name, text)
+            c_id = db_add_comment(
+                conf_id,
+                str(uid),
+                display_name,   # 👈 store emoji+nickname
+                text
+            )
             print("Comment added:", c_id)
         except Exception as e:
             print("Failed adding comment:", e, traceback.format_exc())
-            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "❌ Failed to post comment. Try again later.")
+            await _safe_reply_or_send(
+                message.chat.id,
+                getattr(message, "message_id", None),
+                "❌ Failed to post comment. Try again later."
+            )
             user_state.pop(uid, None)
             return
 
@@ -693,26 +743,41 @@ async def handle_message(message: types.Message):
             try:
                 bot_username = (await bot.get_me()).username
                 new_kb = build_channel_markup(bot_username, conf_id, new_count)
-                await bot.edit_message_reply_markup(TARGET_CHANNEL_ID, conf.get("channel_msg_id"), reply_markup=new_kb)
+                await bot.edit_message_reply_markup(
+                    TARGET_CHANNEL_ID,
+                    conf.get("channel_msg_id"),
+                    reply_markup=new_kb
+                )
             except Exception as e:
                 print("Failed to update channel markup:", e)
-        # respond to user (robust)
-        await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), f"✅ Your comment on Confession #{conf_id} is live!", reply_markup=menu_reply_keyboard())
+
+        # Respond to user
+        await _safe_reply_or_send(
+            message.chat.id,
+            getattr(message, "message_id", None),
+            f"✅ Your comment on Confession #{conf_id} is live!",
+            reply_markup=menu_reply_keyboard()
+        )
         user_state.pop(uid, None)
         return
 
-    # Confession modes (including Share Confession from menu)
+    # Confession modes
     if state.get("mode") in ("share_experience", "share_thought", "share_confession"):
         try:
             conf_id = db_add_confession(str(uid), text)
             print("Confession added:", conf_id)
         except Exception as e:
             print("Failed adding confession:", e, traceback.format_exc())
-            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "❌ Failed to submit confession. Try again later.", reply_markup=menu_reply_keyboard())
+            await _safe_reply_or_send(
+                message.chat.id,
+                getattr(message, "message_id", None),
+                "❌ Failed to submit confession. Try again later.",
+                reply_markup=menu_reply_keyboard()
+            )
             user_state.pop(uid, None)
             return
 
-        # send to admin group for review (include author info)
+        # Forward to admin group
         review_text = (
             f"🛂 *Review New Confession*\n"
             f"👤 Author: {message.from_user.full_name} (ID: {uid})\n"
@@ -723,27 +788,39 @@ async def handle_message(message: types.Message):
             [InlineKeyboardButton(text="✅ Approve", callback_data=f"admin_approve_{conf_id}"),
              InlineKeyboardButton(text="❌ Reject", callback_data=f"admin_reject_{conf_id}")]
         ])
-        # send review to admin group - robust send
         try:
             await bot.send_message(ADMIN_GROUP_ID, review_text, reply_markup=kb)
         except Exception:
-            print("Failed to forward confession to admin group. Check ADMIN_GROUP_ID and bot permissions.")
-            await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "❌ Could not forward confession to admin group. Contact admin.", reply_markup=menu_reply_keyboard())
+            print("Failed to forward confession to admin group.")
+            await _safe_reply_or_send(
+                message.chat.id,
+                getattr(message, "message_id", None),
+                "❌ Could not forward confession to admin group. Contact admin.",
+                reply_markup=menu_reply_keyboard()
+            )
             user_state.pop(uid, None)
             return
 
-        # confirm to user
-        await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "✅ Confession sent for review!", reply_markup=menu_reply_keyboard())
+        await _safe_reply_or_send(
+            message.chat.id,
+            getattr(message, "message_id", None),
+            "✅ Confession sent for review!",
+            reply_markup=menu_reply_keyboard()
+        )
         user_state.pop(uid, None)
         return
 
-    # If message arrives without mode/state, show the quick menu
+    # Default fallback
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💬 Share Experience", callback_data="share_experience")],
         [InlineKeyboardButton(text="💭 Share Thought", callback_data="share_thought")]
     ])
-    await _safe_reply_or_send(message.chat.id, getattr(message, "message_id", None), "What would you like to do?", reply_markup=kb)
-
+    await _safe_reply_or_send(
+        message.chat.id,
+        getattr(message, "message_id", None),
+        "What would you like to do?",
+        reply_markup=kb
+    )
 # ---------------- Core bot flows (callbacks): accept terms, choose share type, comments, browse, votes, reports, admin ----------------
 
 # Accept / decline Terms callbacks
@@ -848,7 +925,7 @@ async def browse_cb(call: types.CallbackQuery):
 
     # Top-level only for pagination
     top_level = [c for c in comments if not c.get("parent_comment_id")]
-    per_page = 10  # 10 top-level comments per page
+    per_page = 10
     total = len(top_level)
     total_pages = max(1, math.ceil(total / per_page))
     page = max(1, min(page, total_pages))
@@ -867,20 +944,48 @@ async def browse_cb(call: types.CallbackQuery):
     for c in chunk:
         c_id = int(c["id"])
         c_text = c.get("text", "")
+
+        # Fetch profile info for commenter
+        profile = db_get_user_profile(int(c.get("user_id", 0)))
+        emoji = profile.get("emoji")
+        nickname = profile.get("nickname")
+        bio = profile.get("bio")
+
+        if emoji or nickname or bio:
+            display_name = f"{emoji or '🙂'} {nickname or 'Anonymous'}"
+            txt = f"💬 {c_text}\n👤 {display_name}"
+            if bio:
+                txt += f"\n📝 {bio}"
+        else:
+            txt = f"💬 {c_text}\n👤 Anonymous"
+
         likes, dislikes = db_get_vote_counts(c_id)
-        txt = f"💬 {c_text}\n👤 *Anonymous*"
         kb = comment_vote_kb(c_id, likes, dislikes, conf_id, page)
         try:
             await bot.send_message(call.from_user.id, txt, reply_markup=kb)
         except Exception:
             await _safe_reply_or_send(call.message.chat.id, None, txt, reply_markup=kb)
 
+        # Render replies
         for r in replies_map.get(c_id, []):
             r_id = int(r["id"])
             r_text = r.get("text", "")
-            likes_r, dislikes_r = db_get_vote_counts(r_id)
             parent_preview = c_text[:50] + ("..." if len(c_text) > 50 else "")
-            reply_txt = f"    ↪️ Reply to \"{parent_preview}\":\n    {r_text}\n    👤 *Anonymous*"
+
+            profile_r = db_get_user_profile(int(r.get("user_id", 0)))
+            emoji_r = profile_r.get("emoji")
+            nickname_r = profile_r.get("nickname")
+            bio_r = profile_r.get("bio")
+
+            if emoji_r or nickname_r or bio_r:
+                display_name_r = f"{emoji_r or '🙂'} {nickname_r or 'Anonymous'}"
+                reply_txt = f"    ↪️ Reply to \"{parent_preview}\":\n    {r_text}\n    👤 {display_name_r}"
+                if bio_r:
+                    reply_txt += f"\n    📝 {bio_r}"
+            else:
+                reply_txt = f"    ↪️ Reply to \"{parent_preview}\":\n    {r_text}\n    👤 Anonymous"
+
+            likes_r, dislikes_r = db_get_vote_counts(r_id)
             kb_r = comment_vote_kb(r_id, likes_r, dislikes_r, conf_id, page)
             try:
                 await bot.send_message(call.from_user.id, reply_txt, reply_markup=kb_r)
@@ -893,7 +998,6 @@ async def browse_cb(call: types.CallbackQuery):
     except Exception:
         await _safe_reply_or_send(call.message.chat.id, None, f"Displaying page {page}/{total_pages}. Total {total} Comments", reply_markup=nav_kb)
     await call.answer()
-
 # Voting: vote_{comment_id}_{type}_{conf_id}_{page}
 @dp.callback_query(lambda c: c.data.startswith("vote_"))
 async def vote_cb(call: types.CallbackQuery):
@@ -1174,6 +1278,7 @@ Menu simplification:
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
 
 
 
