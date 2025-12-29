@@ -183,14 +183,30 @@ def _safe_insert(table: str, payload: dict):
 
 def db_add_confession(user_id: str, text: str) -> int:
     payload = {"user_id": user_id, "text": text, "is_approved": False}
-    res = _safe_insert("confessions", payload)
+    print("Inserting confession:", payload)   # 👈 debug log
+
     try:
+        res = supabase.table("confessions").insert(payload).execute()
+        print("Insert result:", res.data)     # 👈 debug log
         return int(res.data[0]["id"])
-    except Exception:
-        r = supabase.table("confessions").select("*").eq("user_id", user_id).eq("text", text).order("id", {"ascending": False}).limit(1).execute()
-        if r.data:
-            return int(r.data[0]["id"])
-        raise RuntimeError("Could not determine confession id after insert")
+    except APIError as e:
+        # Schema mismatch (e.g. missing is_approved column)
+        msg = getattr(e, "args", [None])[0]
+        print("Supabase insert error:", msg)
+
+        # Retry with reduced payload (only safe fields)
+        reduced = {"user_id": user_id, "text": text}
+        try:
+            res = supabase.table("confessions").insert(reduced).execute()
+            print("Retry insert result:", res.data)
+            return int(res.data[0]["id"])
+        except Exception as e2:
+            print("Retry insert failed:", e2)
+            raise
+
+    except Exception as e:
+        print("Unexpected error inserting confession:", e, traceback.format_exc())
+        raise
 
 def db_get_confession(conf_id: int) -> Optional[dict]:
     r = supabase.table("confessions").select("*").eq("id", conf_id).execute()
@@ -1189,6 +1205,7 @@ Menu simplification:
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
 
 
 
