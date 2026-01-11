@@ -786,7 +786,7 @@ async def handle_message(message: types.Message):
         # Forward to admin group
         review_text = (
             f"🛂 *Review New Confession*\n"
-            f"👤 Author: {message.from_user.full_name} (ID: {uid})\n"
+            #f"👤 Author: {message.from_user.full_name} (ID: {uid})\n"
             f"Confession ID: {conf_id}\n\n"
             f"📝 Content:\n{text}\n\n"
         )
@@ -1287,6 +1287,7 @@ Menu simplification:
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
 
 
 
