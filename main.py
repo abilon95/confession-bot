@@ -30,6 +30,8 @@ from aiogram.types import (
 from aiogram.filters import Command
 from supabase import create_client
 from postgrest.exceptions import APIError
+from aiogram.types import Update
+
 
 # ------------------ Environment (exact names) ------------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -654,10 +656,10 @@ async def retract_ban_cb(call: types.CallbackQuery):
 @app.post("/")
 async def webhook(request: Request):
     try:
-        update = await request.json()
+        data = await request.json()
+        update = Update.model_validate(data)  # convert dict → Update
         await dp.feed_update(bot, update)
     except Exception as e:
         print("Webhook error:", e, traceback.format_exc())
     return {"ok": True}
-
 
