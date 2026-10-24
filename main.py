@@ -1209,27 +1209,28 @@ async def noop_cb(call: types.CallbackQuery):
     await call.answer()
 
 # ------------------ Webhook route (FastAPI) ------------------
+from aiogram.types import Update
+
 @app.post("/")
 async def webhook(request: Request):
     # Log and parse incoming JSON
     data = await request.json()
     print("Webhook received:", data)
 
-    # Validate Update
     try:
-        update = types.Update(**data)
-    except Exception:
-        print("Webhook: invalid update payload")
+        # Properly validate JSON → Update object
+        update = Update.model_validate(data)
+    except Exception as e:
+        print("Webhook: invalid update payload", e)
         return {"ok": False, "error": "invalid update"}
 
-    # Feed update to aiogram
     try:
+        # Feed the validated Update into dispatcher
         await dp.feed_update(bot, update)
     except Exception as e:
-        # Log - do not let exceptions kill the server
         print("Error while feeding update:", e, traceback.format_exc())
-        # swallow errors and return ok=false so Telegram backs off
         return {"ok": False, "error": "handler error"}
+
     return {"ok": True}
 
 # ------------------ Health endpoints ------------------
