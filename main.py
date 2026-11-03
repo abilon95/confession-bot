@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MuConfessionsBot - clean rebuild (Render + Supabase + Telegram webhook)
+MuConfessionsBot1 - clean rebuild (Render + Supabase + Telegram webhook)
 
 Render start command (keep exactly ONE worker, state lives in memory):
     gunicorn main:app --worker-class uvicorn.workers.UvicornWorker --workers 1 --bind 0.0.0.0:$PORT
