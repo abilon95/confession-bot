@@ -15,6 +15,7 @@ Optional env vars:
                       on every startup, so a lost webhook fixes itself.
 """
 
+import logging
 import math
 import os
 import traceback
@@ -22,6 +23,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Tuple
 
 from aiogram import Bot, Dispatcher, F, types
+from aiogram.dispatcher.event.bases import UNHANDLED
 from aiogram.filters import Command
 from aiogram.types import (
     BotCommand,
@@ -34,6 +36,8 @@ from aiogram.types import (
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from supabase import create_client
+
+logging.basicConfig(level=logging.INFO)
 
 # =====================================================================
 # Environment
@@ -1234,9 +1238,14 @@ async def webhook(request: Request):
         return {"ok": False, "error": "invalid update"}
 
     # Log only the update id: this is an anonymous platform, keep message text out of logs.
-    print("Webhook update:", data.get("update_id"))
+    kind = update.event_type
+    chat = getattr(update.event, "chat", None)
+    if chat is None and getattr(update.event, "message", None):
+        chat = update.event.message.chat
+    print("Webhook update:", data.get("update_id"), "type:", kind, "chat:", getattr(chat, "type", "-"))
     try:
-        await dp.feed_update(bot, update)
+        result = await dp.feed_update(bot, update)
+        print("Result:", "NO HANDLER MATCHED" if result is UNHANDLED else "handled")
     except Exception as e:
         print("Error while handling update:", e, traceback.format_exc())
         return {"ok": False, "error": "handler error"}
