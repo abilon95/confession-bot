@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MuConfessionsBot_1 - clean rebuild (Render + Supabase + Telegram webhook)
+MuConfessionsBot - clean rebuild (Render + Supabase + Telegram webhook)
 
 Render start command (keep exactly ONE worker, state lives in memory):
     gunicorn main:app --worker-class uvicorn.workers.UvicornWorker --workers 1 --bind 0.0.0.0:$PORT
@@ -18,6 +18,7 @@ Optional env vars:
 import logging
 import math
 import os
+import re
 import traceback
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Tuple
@@ -510,6 +511,26 @@ async def refresh_channel_count(conf_id: int) -> None:
         print("Channel counter update failed:", e)
 
 
+# ---- link blocking (comments and replies) ----
+BLOCK_MENTIONS = False  # set True to also block @usernames (stops channel promotion)
+LINK_RE = re.compile(
+    r"(https?://|www\.|t\.me/|telegram\.me/|telegram\.dog/"
+    r"|\b[a-z0-9-]+\.(com|net|org|io|me|link|xyz|app|co|info|site|ly|et|click|shop|online)\b)",
+    re.IGNORECASE,
+)
+LINK_BLOCKED_MSG = "🚫 Links aren't allowed in comments. Please remove the link and send your comment again."
+
+
+def contains_link(message: types.Message) -> bool:
+    kinds = {"url", "text_link", "email"}
+    if BLOCK_MENTIONS:
+        kinds.add("mention")
+    for e in (message.entities or []):
+        if e.type in kinds:
+            return True
+    return bool(LINK_RE.search(message.text or ""))
+
+
 RULES_TEXT = (
     "RULES:\n"
     "1. Be respectful. No hate speech, harassment, or threats.\n"
@@ -825,6 +846,9 @@ async def handle_reply(message: types.Message):
     if not message.text:
         await message.answer("Please send text only.")
         return
+    if contains_link(message):
+        await message.answer(LINK_BLOCKED_MSG)  # keep reply state so they can retry
+        return
     state = user_reply_state.pop(uid, None)
     if not state:
         return
@@ -866,6 +890,9 @@ async def handle_message(message: types.Message):
     if state.get("active_conf_id"):
         if not text:
             await message.answer("Please send text only.")
+            return
+        if contains_link(message):
+            await message.answer(LINK_BLOCKED_MSG)  # keep comment state so they can retry
             return
         conf_id = state["active_conf_id"]
         try:
